@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -56,6 +57,31 @@ CLASS_CATEGORIES = {
 }
 
 CATEGORY_THRESHOLDS = {"person": 0.45, "animal": 0.42, "vehicle": 0.50}
+DEPENDENCY_RETRY_SECONDS = 30.0
+
+
+def _probe_native_detection_dependencies() -> str | None:
+    """Load native detection modules in a child so loader failures cannot kill us."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", "import cv2; import numpy"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return "native detection dependency check timed out"
+    except OSError as exc:
+        return f"native detection dependency check could not start: {exc}"
+    if result.returncode == 0:
+        return None
+    output = (result.stderr or result.stdout).strip().splitlines()
+    detail = output[-1][:500] if output else "no diagnostic output"
+    return (
+        "native detection dependencies failed to load "
+        f"(status {result.returncode}): {detail}"
+    )
 
 
 def _hailo_architecture() -> str | None:
@@ -302,6 +328,7 @@ class DetectionEngine:
         self._analysis_times: deque[float] = deque(maxlen=60)
         self._ai_backend_name: str | None = None
         self._model: Any = None
+        self._next_dependency_retry = 0.0
         self._next_ai_retry = 0.0
         self._hailo_failed_until = 0.0
         self._next_hailo_probe = 0.0
@@ -337,6 +364,7 @@ class DetectionEngine:
                 self._ai_state = "starting" if ai else "disabled"
                 self._ai_error = None
                 if ai:
+                    self._next_dependency_retry = 0.0
                     self._next_ai_retry = 0.0
             if motion is not None and motion != self.motion_enabled:
                 self.motion_enabled = motion
@@ -344,6 +372,8 @@ class DetectionEngine:
                 self._motion_score = 0.0
                 self._motion_background = None
                 self._motion_warmup = 0
+                if motion:
+                    self._next_dependency_retry = 0.0
             if sensitivity is not None:
                 if not 1 <= sensitivity <= 100:
                     raise ValueError("motion_sensitivity must be between 1 and 100")
@@ -359,28 +389,56 @@ class DetectionEngine:
             self._condition.notify()
 
     def _worker(self) -> None:
-        try:
-            import cv2
-            import numpy as np
-        except ImportError as exc:
-            LOG.error("Detection dependencies unavailable: %s", exc)
-            with self._condition:
-                self._ai_state = "unavailable"
-                self._ai_error = str(exc)
-            return
-
         interval = 1.0 / self.analysis_fps
         last_analysis = 0.0
+        cv2: Any = None
+        np: Any = None
         while not self._stop.is_set():
             with self._condition:
-                self._condition.wait_for(
-                    lambda: self._pending_frame is not None or self._stop.is_set(),
+                ready = self._condition.wait_for(
+                    lambda: self._stop.is_set()
+                    or (
+                        self._pending_frame is not None
+                        and (self.motion_enabled or self.ai_enabled)
+                        and (
+                            cv2 is not None
+                            or time.monotonic() >= self._next_dependency_retry
+                        )
+                    ),
                     timeout=1.0,
                 )
                 if self._stop.is_set():
                     break
+                if not ready or not (self.motion_enabled or self.ai_enabled):
+                    continue
                 frame = self._pending_frame
                 self._pending_frame = None
+
+            if cv2 is None:
+                dependency_error = _probe_native_detection_dependencies()
+                if dependency_error is not None:
+                    LOG.error("Detection dependencies unavailable: %s", dependency_error)
+                    with self._condition:
+                        self._next_dependency_retry = (
+                            time.monotonic() + DEPENDENCY_RETRY_SECONDS
+                        )
+                        self._ai_state = "unavailable" if self.ai_enabled else "disabled"
+                        self._ai_error = dependency_error
+                    continue
+                try:
+                    import cv2
+                    import numpy as np
+                except ImportError as exc:
+                    LOG.error("Detection dependencies unavailable: %s", exc)
+                    with self._condition:
+                        self._ai_state = "unavailable"
+                        self._ai_error = str(exc)
+                    return
+                with self._condition:
+                    self._next_dependency_retry = 0.0
+                    self._ai_error = None
+                    if not self.ai_enabled:
+                        self._ai_state = "disabled"
 
             now = time.monotonic()
             if now - last_analysis < interval or frame is None:

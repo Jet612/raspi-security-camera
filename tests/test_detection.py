@@ -1,12 +1,14 @@
+import builtins
 import os
+import threading
 import time
 import unittest
-from unittest.mock import patch
+from subprocess import CompletedProcess
+from unittest.mock import Mock, patch
 
-import cv2
 import numpy as np
 
-from detection import DetectionEngine
+from detection import DetectionEngine, _probe_native_detection_dependencies
 
 
 class DetectionFilterTests(unittest.TestCase):
@@ -43,7 +45,111 @@ class DetectionFilterTests(unittest.TestCase):
         self.assertFalse(status["motion"]["enabled"])
         self.assertEqual(status["ai"]["state"], "disabled")
 
+    def test_disabled_worker_does_not_import_native_dependencies(self):
+        with patch.dict(
+            os.environ,
+            {"MOTION_ENABLED": "false", "AI_ENABLED": "false"},
+            clear=True,
+        ):
+            engine = DetectionEngine()
+        real_import = builtins.__import__
+        import_attempted = threading.Event()
+
+        def track_import(name, *args, **kwargs):
+            if name in {"cv2", "numpy"}:
+                import_attempted.set()
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=track_import):
+            engine.start()
+            try:
+                engine.submit(b"unused-frame")
+                self.assertFalse(import_attempted.wait(timeout=0.1))
+            finally:
+                engine.stop()
+
+    def test_native_dependency_probe_reports_loader_failure(self):
+        failed = CompletedProcess(
+            [],
+            127,
+            stdout="",
+            stderr="Inconsistency detected by ld.so: invalid DT_PLTREL\n",
+        )
+        with patch("detection.subprocess.run", return_value=failed):
+            error = _probe_native_detection_dependencies()
+
+        self.assertIn("status 127", error)
+        self.assertIn("invalid DT_PLTREL", error)
+
+    def test_healthy_native_dependencies_are_loaded_normally(self):
+        with patch.dict(
+            os.environ,
+            {"MOTION_ENABLED": "true", "AI_ENABLED": "false"},
+            clear=True,
+        ):
+            engine = DetectionEngine()
+        decoded = threading.Event()
+        fake_numpy = Mock()
+        fake_numpy.uint8 = object()
+        fake_numpy.frombuffer.return_value = b"decoded-input"
+        fake_cv2 = Mock()
+        fake_cv2.IMREAD_COLOR = 1
+
+        def decode_frame(*_args):
+            decoded.set()
+            return None
+
+        fake_cv2.imdecode.side_effect = decode_frame
+        with patch(
+            "detection._probe_native_detection_dependencies", return_value=None
+        ):
+            with patch.dict(
+                "sys.modules", {"cv2": fake_cv2, "numpy": fake_numpy}
+            ):
+                engine.start()
+                try:
+                    engine.submit(b"test-frame")
+                    self.assertTrue(decoded.wait(timeout=1.0))
+                    self.assertTrue(engine._thread.is_alive())
+                    self.assertIsNone(engine.status()["ai"]["error"])
+                finally:
+                    engine.stop()
+
+    def test_native_loader_failure_does_not_kill_detection_worker(self):
+        with patch.dict(
+            os.environ,
+            {"MOTION_ENABLED": "true", "AI_ENABLED": "false"},
+            clear=True,
+        ):
+            engine = DetectionEngine()
+        real_import = builtins.__import__
+        import_attempted = threading.Event()
+
+        def track_import(name, *args, **kwargs):
+            if name in {"cv2", "numpy"}:
+                import_attempted.set()
+            return real_import(name, *args, **kwargs)
+
+        with patch(
+            "detection._probe_native_detection_dependencies",
+            return_value="native loader failed",
+        ):
+            with patch("builtins.__import__", side_effect=track_import):
+                engine.start()
+                try:
+                    engine.submit(b"unused-frame")
+                    deadline = time.monotonic() + 1.0
+                    while engine.status()["ai"]["error"] is None:
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(0.01)
+                    self.assertFalse(import_attempted.is_set())
+                    self.assertTrue(engine._thread.is_alive())
+                finally:
+                    engine.stop()
+
     def test_motion_detector_ignores_warmup_then_detects_change(self):
+        import cv2
+
         with patch.dict(os.environ, {"AI_ENABLED": "false"}, clear=True):
             engine = DetectionEngine()
         quiet = np.zeros((360, 640, 3), dtype=np.uint8)
@@ -70,6 +176,8 @@ class DetectionFilterTests(unittest.TestCase):
             engine.set_enabled(sensitivity=101)
 
     def test_auto_backend_defaults_to_cpu_without_hailo(self):
+        import cv2
+
         with patch.dict(os.environ, {}, clear=True):
             engine = DetectionEngine()
         with patch("detection._hailo_architecture", return_value=None):

@@ -40,9 +40,32 @@ const playbackStream = $("#playback-stream");
 const playbackTitle = $("#playback-title");
 const closePlaybackButton = $("#close-playback");
 const toast = $("#toast");
+const logoutButton = $("#logout-button");
+const refreshSystemButton = $("#refresh-system");
+const healthState = $("#health-state");
+const systemCpu = $("#system-cpu");
+const systemCpuMeter = $("#system-cpu-meter");
+const systemLoad = $("#system-load");
+const systemTemperature = $("#system-temperature");
+const systemTemperatureMeter = $("#system-temperature-meter");
+const systemMemory = $("#system-memory");
+const systemMemoryMeter = $("#system-memory-meter");
+const systemMemoryDetail = $("#system-memory-detail");
+const systemStorage = $("#system-storage");
+const systemStorageMeter = $("#system-storage-meter");
+const systemStorageDetail = $("#system-storage-detail");
+const systemHostname = $("#system-hostname");
+const systemOs = $("#system-os");
+const systemKernel = $("#system-kernel");
+const systemUptime = $("#system-uptime");
+const rebootButton = $("#reboot-button");
+const rebootDialog = $("#reboot-dialog");
+const cancelRebootButton = $("#cancel-reboot");
+const confirmRebootButton = $("#confirm-reboot");
 
 let streamRetry;
 let toastTimer;
+let csrfToken = "";
 let consecutiveStatusErrors = 0;
 let latestStatus = null;
 let latestDetections = [];
@@ -57,13 +80,23 @@ function showToast(message, error = false) {
 }
 
 async function api(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = { ...(options.headers || {}) };
+  if (options.body) headers["Content-Type"] = "application/json";
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
   const response = await fetch(path, {
     cache: "no-store",
     ...options,
-    headers: options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers,
+    headers,
   });
   let payload = {};
   try { payload = await response.json(); } catch (_) { /* Empty responses are allowed. */ }
+  if (response.status === 401) {
+    window.location.replace("/login");
+    throw new Error("Your session has expired");
+  }
   if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
 }
@@ -338,8 +371,62 @@ snapshotButton.addEventListener("click", (event) => {
 
 function formatBytes(bytes) {
   const value = Number(bytes) || 0;
-  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  const precision = index < 2 || amount >= 100 ? 0 : 1;
+  return `${amount.toFixed(precision)} ${units[index]}`;
+}
+
+function setMeter(element, percent) {
+  const value = Math.max(0, Math.min(100, Number(percent) || 0));
+  element.style.width = `${value}%`;
+  element.parentElement.classList.toggle("warning", value >= 80);
+  element.parentElement.classList.toggle("critical", value >= 92);
+}
+
+function renderSystem(system) {
+  const cpu = system.cpu_percent;
+  systemCpu.textContent = cpu == null ? "Sampling" : `${Number(cpu).toFixed(1)}%`;
+  setMeter(systemCpuMeter, cpu);
+  systemLoad.textContent = `Load ${system.load_average.map((value) => Number(value).toFixed(2)).join(" · ")}`;
+
+  const temperature = system.temperature_c;
+  systemTemperature.textContent = temperature == null ? "Unavailable" : `${Number(temperature).toFixed(1)} °C`;
+  setMeter(systemTemperatureMeter, temperature == null ? 0 : (temperature / 85) * 100);
+
+  systemMemory.textContent = `${Number(system.memory.used_percent).toFixed(1)}%`;
+  setMeter(systemMemoryMeter, system.memory.used_percent);
+  systemMemoryDetail.textContent = `${formatBytes(system.memory.used_bytes)} of ${formatBytes(system.memory.total_bytes)}`;
+
+  systemStorage.textContent = `${Number(system.disk.used_percent).toFixed(1)}%`;
+  setMeter(systemStorageMeter, system.disk.used_percent);
+  systemStorageDetail.textContent = `${formatBytes(system.disk.used_bytes)} of ${formatBytes(system.disk.total_bytes)}`;
+
+  systemHostname.textContent = system.hostname;
+  systemOs.textContent = system.os;
+  systemOs.title = system.os;
+  systemKernel.textContent = `${system.kernel} · ${system.architecture}`;
+  systemKernel.title = `${system.kernel} · ${system.architecture}`;
+  systemUptime.textContent = system.uptime;
+  healthState.textContent = "Live";
+  healthState.classList.add("online");
+}
+
+async function loadSystem() {
+  refreshSystemButton.disabled = true;
+  try {
+    renderSystem(await api("/api/system"));
+  } catch (error) {
+    healthState.textContent = "Unavailable";
+    healthState.classList.remove("online");
+  } finally {
+    refreshSystemButton.disabled = false;
+  }
 }
 
 function createButton(label, className, handler) {
@@ -428,6 +515,7 @@ async function loadRecordings() {
 }
 
 refreshRecordingsButton.addEventListener("click", loadRecordings);
+refreshSystemButton.addEventListener("click", loadSystem);
 closePlaybackButton.addEventListener("click", closePlayback);
 playbackDialog.addEventListener("click", (event) => {
   if (event.target === playbackDialog) closePlayback();
@@ -455,13 +543,59 @@ document.addEventListener("fullscreenchange", () => {
 });
 window.addEventListener("resize", drawDetections);
 
+rebootButton.addEventListener("click", () => rebootDialog.showModal());
+cancelRebootButton.addEventListener("click", () => rebootDialog.close());
+rebootDialog.addEventListener("click", (event) => {
+  if (event.target === rebootDialog) rebootDialog.close();
+});
+confirmRebootButton.addEventListener("click", async () => {
+  confirmRebootButton.disabled = true;
+  try {
+    await api("/api/system/reboot", { method: "POST", body: JSON.stringify({ confirm: "reboot" }) });
+    rebootDialog.close();
+    disconnectStream();
+    setConnection("waiting", "Rebooting device");
+    showToast("Reboot requested. The dashboard will reconnect after startup.");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    confirmRebootButton.disabled = false;
+  }
+});
+
+logoutButton.addEventListener("click", async () => {
+  logoutButton.disabled = true;
+  try {
+    await api("/api/logout", { method: "POST" });
+  } finally {
+    window.location.replace("/login");
+  }
+});
+
+for (const item of document.querySelectorAll(".nav-item")) {
+  item.addEventListener("click", () => {
+    document.querySelector(".nav-item.active")?.classList.remove("active");
+    item.classList.add("active");
+  });
+}
+
 function updateClock() {
   viewerTime.textContent = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date());
 }
 
-updateStatus();
-loadRecordings();
-updateClock();
-setInterval(updateStatus, 1000);
-setInterval(updateClock, 1000);
-setInterval(loadRecordings, 10000);
+async function initialize() {
+  try {
+    const session = await api("/api/session");
+    csrfToken = session.csrf_token;
+    await Promise.all([updateStatus(), loadRecordings(), loadSystem()]);
+    updateClock();
+    setInterval(updateStatus, 1000);
+    setInterval(updateClock, 1000);
+    setInterval(loadRecordings, 10000);
+    setInterval(loadSystem, 5000);
+  } catch (error) {
+    markOffline(error.message);
+  }
+}
+
+initialize();
