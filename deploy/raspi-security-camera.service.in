@@ -1,0 +1,26 @@
+[Unit]
+Description=Raspberry Pi security camera dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=/usr/bin/python3 -B __PROJECT_DIR__/camera_server.py
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/tmp
+EnvironmentFile=-/etc/default/raspi-security-camera
+
+# Keep the service contained without blocking camera/video devices.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__PROJECT_DIR__/recordings
+
+[Install]
+WantedBy=multi-user.target

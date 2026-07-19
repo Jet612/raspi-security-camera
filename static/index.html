@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0a0c10">
+    <meta name="color-scheme" content="dark">
+    <title>Sentinel · Device Dashboard</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css?v=3">
+    <script src="/app.js?v=3" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#overview" aria-label="Sentinel dashboard home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"></circle><circle cx="16" cy="16" r="5"></circle><path d="M16 4v7M16 21v7M4 16h7M21 16h7"></path></svg>
+          </span>
+          <span><strong>Sentinel</strong><small>Camera 01</small></span>
+        </a>
+
+        <nav aria-label="Dashboard sections">
+          <a class="nav-item active" href="#overview">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>
+            Overview
+          </a>
+          <a class="nav-item" href="#recordings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m10 9 5 3-5 3Z"></path></svg>
+            Recordings
+          </a>
+        </nav>
+
+        <div class="sidebar-device">
+          <span class="device-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="15" height="12" rx="2"></rect><path d="m18 10 3-2v8l-3-2"></path></svg></span>
+          <span><small>Connected device</small><strong>Raspberry Pi</strong></span>
+          <span id="sidebar-device-dot" class="device-dot"></span>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Device control center</p>
+            <h1>Camera dashboard</h1>
+          </div>
+          <div id="connection-status" class="status status-waiting" role="status" aria-live="polite">
+            <span class="status-dot"></span><span id="status-label">Connecting</span>
+          </div>
+        </header>
+
+        <main id="overview">
+          <section class="dashboard-grid" aria-label="Camera overview">
+            <article class="panel live-panel">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">Live feed</span><h2>Front camera</h2></div>
+                <div id="live-badge" class="live-badge"><span></span><span id="live-label">Live</span></div>
+              </div>
+
+              <div id="viewer" class="viewer">
+                <img id="camera-stream" alt="Live view from Camera 01">
+                <canvas id="detection-overlay" aria-hidden="true"></canvas>
+                <div class="empty-state">
+                  <span class="empty-camera" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 7 9.5 5h5L16 7"></path><rect x="3" y="7" width="18" height="12" rx="2"></rect><circle cx="12" cy="13" r="3"></circle></svg></span>
+                  <strong id="empty-title">Starting camera</strong>
+                  <span id="empty-detail">Waiting for the first frame…</span>
+                </div>
+                <div id="detection-badge" class="detection-badge hidden"><span></span><span id="detection-badge-label">Activity detected</span></div>
+                <div class="viewer-meta"><span id="viewer-time">--:--:--</span><span></span><span id="stream-details">1920 × 1080</span></div>
+                <button id="fullscreen-button" class="floating-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"></path></svg>
+                </button>
+              </div>
+
+              <div class="camera-toolbar">
+                <button id="record-button" class="button button-record" type="button"><span class="record-dot"></span><span id="record-button-label">Start recording</span></button>
+                <a id="snapshot-button" class="button button-secondary" href="/snapshot.jpg" target="_blank" rel="noopener">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7 9.5 5h5L16 7"></path><rect x="3" y="7" width="18" height="12" rx="2"></rect><circle cx="12" cy="13" r="3"></circle></svg>
+                  Snapshot
+                </a>
+                <span id="recording-timer" class="recording-timer hidden">00:00</span>
+              </div>
+            </article>
+
+            <aside class="right-column">
+              <article class="panel controls-panel">
+                <div class="panel-heading compact"><div><span class="panel-kicker">Device</span><h2>Controls</h2></div></div>
+
+                <label class="control-row" for="camera-toggle">
+                  <span class="control-icon green"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="15" height="12" rx="2"></rect><path d="m18 10 3-2v8l-3-2"></path></svg></span>
+                  <span class="control-copy"><strong>Camera</strong><small id="camera-control-detail">Video capture is on</small></span>
+                  <span class="switch"><input id="camera-toggle" type="checkbox" checked><span></span></span>
+                </label>
+
+                <label class="control-row" for="ai-toggle">
+                  <span class="control-icon violet"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"></rect><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3M10 10h4v4h-4z"></path></svg></span>
+                  <span class="control-copy"><strong>AI detection</strong><small id="ai-control-detail">Starting detector</small></span>
+                  <span class="switch"><input id="ai-toggle" type="checkbox" checked><span></span></span>
+                </label>
+
+                <label class="control-row" for="motion-toggle">
+                  <span class="control-icon amber"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"></path><path d="M12 7a5 5 0 1 0 5 5M12 11a1 1 0 1 0 1 1"></path></svg></span>
+                  <span class="control-copy"><strong>Motion detection</strong><small id="motion-control-detail">Monitoring frame changes</small></span>
+                  <span class="switch"><input id="motion-toggle" type="checkbox" checked><span></span></span>
+                </label>
+                <label class="sensitivity-row" for="motion-sensitivity">
+                  <span><strong>Motion sensitivity</strong><small>Higher detects smaller changes</small></span>
+                  <output id="motion-sensitivity-value" for="motion-sensitivity">89</output>
+                  <input id="motion-sensitivity" type="range" min="1" max="100" value="89">
+                  <span class="range-labels"><span>Low</span><span>High</span></span>
+                </label>
+              </article>
+
+              <article class="panel activity-panel">
+                <div class="panel-heading compact"><div><span class="panel-kicker">Current state</span><h2 id="activity-title">Monitoring</h2></div><span id="activity-pulse" class="activity-pulse"></span></div>
+                <dl class="status-list">
+                  <div><dt>Frame rate</dt><dd id="fps-value">—</dd></div>
+                  <div><dt>AI engine</dt><dd id="ai-value">Starting</dd></div>
+                  <div><dt>Motion</dt><dd id="motion-value">Clear</dd></div>
+                  <div><dt>Detected</dt><dd id="objects-value">None</dd></div>
+                </dl>
+              </article>
+            </aside>
+          </section>
+
+          <section id="recordings" class="recordings-section">
+            <div class="section-heading">
+              <div><p class="eyebrow">Local storage</p><h2>Recordings</h2><p>Recordings stay on this device until you delete them.</p></div>
+              <button id="refresh-recordings" class="button button-secondary" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5"></path><path d="M6.1 9a7 7 0 0 1 11.5-2.6L20 9M4 15l2.4 2.6A7 7 0 0 0 17.9 15"></path></svg>Refresh</button>
+            </div>
+            <div id="recordings-list" class="recordings-list" aria-live="polite">
+              <div class="recordings-empty"><span class="loader"></span><strong>Loading recordings</strong></div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <dialog id="playback-dialog" class="playback-dialog">
+      <div class="dialog-heading"><div><span class="panel-kicker">Recording playback</span><h2 id="playback-title">Recording</h2></div><button id="close-playback" class="close-button" type="button" aria-label="Close playback">×</button></div>
+      <div class="playback-stage"><img id="playback-stream" alt="Recorded camera footage"></div>
+      <p>MJPEG playback runs at the camera’s configured frame rate.</p>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
