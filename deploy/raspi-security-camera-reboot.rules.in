@@ -1,0 +1,10 @@
+polkit.addRule(function(action, subject) {
+    var rebootActions = [
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.reboot-multiple-sessions"
+    ];
+
+    if (rebootActions.indexOf(action.id) >= 0 && subject.user === "__SERVICE_USER__") {
+        return polkit.Result.YES;
+    }
+});

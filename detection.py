@@ -359,28 +359,37 @@ class DetectionEngine:
             self._condition.notify()
 
     def _worker(self) -> None:
-        try:
-            import cv2
-            import numpy as np
-        except ImportError as exc:
-            LOG.error("Detection dependencies unavailable: %s", exc)
-            with self._condition:
-                self._ai_state = "unavailable"
-                self._ai_error = str(exc)
-            return
-
         interval = 1.0 / self.analysis_fps
         last_analysis = 0.0
+        cv2: Any = None
+        np: Any = None
         while not self._stop.is_set():
             with self._condition:
                 self._condition.wait_for(
-                    lambda: self._pending_frame is not None or self._stop.is_set(),
+                    lambda: self._stop.is_set()
+                    or (
+                        self._pending_frame is not None
+                        and (self.motion_enabled or self.ai_enabled)
+                    ),
                     timeout=1.0,
                 )
                 if self._stop.is_set():
                     break
+                if not (self.motion_enabled or self.ai_enabled):
+                    continue
                 frame = self._pending_frame
                 self._pending_frame = None
+
+            if cv2 is None:
+                try:
+                    import cv2
+                    import numpy as np
+                except ImportError as exc:
+                    LOG.error("Detection dependencies unavailable: %s", exc)
+                    with self._condition:
+                        self._ai_state = "unavailable"
+                        self._ai_error = str(exc)
+                    return
 
             now = time.monotonic()
             if now - last_analysis < interval or frame is None:

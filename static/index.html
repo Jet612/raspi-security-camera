@@ -7,8 +7,8 @@
     <meta name="color-scheme" content="dark">
     <title>Sentinel · Device Dashboard</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=3">
-    <script src="/app.js?v=3" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=4">
+    <script src="/app.js?v=4" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -24,6 +24,10 @@
           <a class="nav-item active" href="#overview">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>
             Overview
+          </a>
+          <a class="nav-item" href="#device">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M9 7h6M9 11h6M9 15h3"></path><circle cx="16" cy="16" r="1"></circle></svg>
+            Device
           </a>
           <a class="nav-item" href="#recordings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m10 9 5 3-5 3Z"></path></svg>
@@ -44,8 +48,13 @@
             <p class="eyebrow">Device control center</p>
             <h1>Camera dashboard</h1>
           </div>
-          <div id="connection-status" class="status status-waiting" role="status" aria-live="polite">
-            <span class="status-dot"></span><span id="status-label">Connecting</span>
+          <div class="topbar-actions">
+            <div id="connection-status" class="status status-waiting" role="status" aria-live="polite">
+              <span class="status-dot"></span><span id="status-label">Connecting</span>
+            </div>
+            <button id="logout-button" class="icon-button" type="button" aria-label="Sign out" title="Sign out">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3"></path><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"></path></svg>
+            </button>
           </div>
         </header>
 
@@ -123,6 +132,57 @@
             </aside>
           </section>
 
+          <section id="device" class="system-section">
+            <div class="section-heading">
+              <div><p class="eyebrow">Raspberry Pi</p><h2>Device</h2><p>Live health and operating system information.</p></div>
+              <button id="refresh-system" class="button button-secondary" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5"></path><path d="M6.1 9a7 7 0 0 1 11.5-2.6L20 9M4 15l2.4 2.6A7 7 0 0 0 17.9 15"></path></svg>Refresh</button>
+            </div>
+            <div class="system-layout">
+              <article class="panel system-health-panel">
+                <div class="panel-heading compact"><div><span class="panel-kicker">Resources</span><h2>System health</h2></div><span id="health-state" class="health-state">Sampling</span></div>
+                <div class="metrics-grid">
+                  <div class="metric">
+                    <div><span>CPU</span><strong id="system-cpu">—</strong></div>
+                    <div class="meter"><span id="system-cpu-meter"></span></div>
+                    <small id="system-load">Load —</small>
+                  </div>
+                  <div class="metric">
+                    <div><span>Temperature</span><strong id="system-temperature">—</strong></div>
+                    <div class="meter"><span id="system-temperature-meter"></span></div>
+                    <small>Processor thermal sensor</small>
+                  </div>
+                  <div class="metric">
+                    <div><span>Memory</span><strong id="system-memory">—</strong></div>
+                    <div class="meter"><span id="system-memory-meter"></span></div>
+                    <small id="system-memory-detail">—</small>
+                  </div>
+                  <div class="metric">
+                    <div><span>Storage</span><strong id="system-storage">—</strong></div>
+                    <div class="meter"><span id="system-storage-meter"></span></div>
+                    <small id="system-storage-detail">—</small>
+                  </div>
+                </div>
+              </article>
+
+              <article class="panel system-details-panel">
+                <div class="panel-heading compact"><div><span class="panel-kicker">Host</span><h2>Device information</h2></div></div>
+                <dl class="device-details">
+                  <div><dt>Hostname</dt><dd id="system-hostname">—</dd></div>
+                  <div><dt>Operating system</dt><dd id="system-os">—</dd></div>
+                  <div><dt>Kernel</dt><dd id="system-kernel">—</dd></div>
+                  <div><dt>Uptime</dt><dd id="system-uptime">—</dd></div>
+                </dl>
+                <div class="device-actions">
+                  <div><strong>Restart device</strong><small>The dashboard will reconnect after the Pi boots.</small></div>
+                  <button id="reboot-button" class="button button-danger" type="button">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v10"></path><path d="M6.4 5.6a8 8 0 1 0 11.2 0"></path></svg>
+                    Reboot
+                  </button>
+                </div>
+              </article>
+            </div>
+          </section>
+
           <section id="recordings" class="recordings-section">
             <div class="section-heading">
               <div><p class="eyebrow">Local storage</p><h2>Recordings</h2><p>Recordings stay on this device until you delete them.</p></div>
@@ -140,6 +200,16 @@
       <div class="dialog-heading"><div><span class="panel-kicker">Recording playback</span><h2 id="playback-title">Recording</h2></div><button id="close-playback" class="close-button" type="button" aria-label="Close playback">×</button></div>
       <div class="playback-stage"><img id="playback-stream" alt="Recorded camera footage"></div>
       <p>MJPEG playback runs at the camera’s configured frame rate.</p>
+    </dialog>
+
+    <dialog id="reboot-dialog" class="confirm-dialog">
+      <div class="confirm-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2v10"></path><path d="M6.4 5.6a8 8 0 1 0 11.2 0"></path></svg></div>
+      <h2>Reboot this device?</h2>
+      <p>Video and recordings will be unavailable while the Raspberry Pi restarts.</p>
+      <div class="confirm-actions">
+        <button id="cancel-reboot" class="button button-secondary" type="button">Cancel</button>
+        <button id="confirm-reboot" class="button button-danger" type="button">Reboot device</button>
+      </div>
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

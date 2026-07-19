@@ -14,12 +14,31 @@ RestartSec=3
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME=/tmp
 EnvironmentFile=-/etc/default/raspi-security-camera
+EnvironmentFile=/etc/raspi-security-camera/environment
+StateDirectory=raspi-security-camera
+StateDirectoryMode=0700
 
 # Keep the service contained without blocking camera/video devices.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
 ReadWritePaths=__PROJECT_DIR__/recordings
 
 [Install]

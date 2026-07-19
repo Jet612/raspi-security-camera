@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import ipaddress
 import json
 import logging
 import os
 import shlex
 import shutil
 import signal
+import ssl
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -21,8 +25,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from auth import AuthConfig, AuthSession, Authenticator, LoginRateLimited, hash_password
 from detection import DetectionEngine
 from recording import RecordingManager
+from settings import DeviceSettings, SettingsStore
+from system_control import SystemController, SystemMonitor
 
 
 LOG = logging.getLogger("camera")
@@ -42,6 +49,24 @@ def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return value
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, str(default)).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -64,7 +89,7 @@ class Config:
                 "CAMERA_AF_MODE must be default, manual, auto, or continuous"
             )
         return cls(
-            host=os.getenv("CAMERA_HOST", "0.0.0.0"),
+            host=os.getenv("CAMERA_HOST", "127.0.0.1"),
             port=env_int("CAMERA_PORT", 8080, 1, 65535),
             width=env_int("CAMERA_WIDTH", 1920, 320, 4608),
             height=env_int("CAMERA_HEIGHT", 1080, 240, 2592),
@@ -109,6 +134,51 @@ class Config:
         ]
 
 
+@dataclass(frozen=True)
+class TLSConfig:
+    certificate: str | None
+    private_key: str | None
+    trusted_https_proxy: bool
+
+    @property
+    def enabled(self) -> bool:
+        return self.certificate is not None
+
+    @property
+    def secure_transport(self) -> bool:
+        return self.enabled or self.trusted_https_proxy
+
+    @classmethod
+    def from_environment(cls, host: str) -> "TLSConfig":
+        certificate = os.getenv("CAMERA_TLS_CERT") or None
+        private_key = os.getenv("CAMERA_TLS_KEY") or None
+        if bool(certificate) != bool(private_key):
+            raise ValueError("CAMERA_TLS_CERT and CAMERA_TLS_KEY must be set together")
+        trusted_proxy = env_bool("CAMERA_TRUST_PROXY_HTTPS", False)
+        if trusted_proxy and not is_loopback_host(host):
+            raise ValueError(
+                "CAMERA_TRUST_PROXY_HTTPS requires CAMERA_HOST to be a loopback address"
+            )
+        if not certificate and not trusted_proxy and not is_loopback_host(host):
+            raise ValueError(
+                "refusing unencrypted non-loopback access; configure TLS or bind "
+                "CAMERA_HOST to 127.0.0.1 behind an HTTPS proxy"
+            )
+        return cls(certificate, private_key, trusted_proxy)
+
+    def context(self) -> ssl.SSLContext | None:
+        if not self.enabled:
+            return None
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.options |= ssl.OP_NO_COMPRESSION
+        try:
+            context.load_cert_chain(self.certificate, self.private_key)
+        except (OSError, ssl.SSLError) as exc:
+            raise ValueError("could not load CAMERA_TLS_CERT/CAMERA_TLS_KEY") from exc
+        return context
+
+
 class CameraStream:
     """Owns one capture process and publishes only its most recent JPEG."""
 
@@ -117,6 +187,8 @@ class CameraStream:
         config: Config,
         detection: DetectionEngine | None = None,
         recordings: RecordingManager | None = None,
+        *,
+        initial_enabled: bool = True,
     ) -> None:
         self.config = config
         self.detection = detection
@@ -127,10 +199,10 @@ class CameraStream:
         self._frame_at = 0.0
         self._frame_times: deque[float] = deque(maxlen=max(120, config.framerate * 6))
         self._clients = 0
-        self._state = "starting"
+        self._state = "starting" if initial_enabled else "disabled"
         self._error: str | None = None
         self._process: subprocess.Popen[bytes] | None = None
-        self._enabled = True
+        self._enabled = initial_enabled
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread = threading.Thread(
@@ -316,31 +388,106 @@ class CameraHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], stream: CameraStream) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        stream: CameraStream,
+        authenticator: Authenticator,
+        *,
+        system_monitor: SystemMonitor | None = None,
+        system_controller: SystemController | None = None,
+        settings_store: SettingsStore | None = None,
+        secure_transport: bool = False,
+    ) -> None:
         self.stream = stream
+        self.authenticator = authenticator
+        self.system_monitor = system_monitor or SystemMonitor()
+        self.system_controller = system_controller or SystemController()
+        self.settings_store = settings_store
+        self._settings_lock = threading.Lock()
+        self.secure_transport = secure_transport
         super().__init__(address, CameraRequestHandler)
+
+    def set_camera_enabled(self, enabled: bool) -> dict[str, object]:
+        with self._settings_lock:
+            if self.settings_store is not None:
+                self.settings_store.update(camera_enabled=enabled)
+            return self.stream.set_enabled(enabled)
+
+    def set_detection(
+        self,
+        *,
+        ai: bool | None,
+        motion: bool | None,
+        sensitivity: float | None,
+    ) -> dict[str, object]:
+        detection = self.stream.detection
+        if detection is None:
+            raise RuntimeError("detection is unavailable")
+        sensitivity_value = round(sensitivity) if sensitivity is not None else None
+        if sensitivity is not None and sensitivity != sensitivity_value:
+            raise ValueError("motion_sensitivity must be an integer")
+        with self._settings_lock:
+            if self.settings_store is not None:
+                self.settings_store.update(
+                    ai_enabled=ai,
+                    motion_enabled=motion,
+                    motion_sensitivity=sensitivity_value,
+                )
+            return detection.set_enabled(
+                ai=ai, motion=motion, sensitivity=sensitivity_value
+            )
+
+    def get_request(self) -> tuple[object, object]:
+        request, address = super().get_request()
+        request.settimeout(15)
+        return request, address
 
 
 class CameraRequestHandler(BaseHTTPRequestHandler):
     server: CameraHTTPServer
     protocol_version = "HTTP/1.1"
+    server_version = "Sentinel"
+    sys_version = ""
     static_files = {
         "/": ("index.html", "text/html; charset=utf-8"),
         "/index.html": ("index.html", "text/html; charset=utf-8"),
+        "/login": ("login.html", "text/html; charset=utf-8"),
         "/styles.css": ("styles.css", "text/css; charset=utf-8"),
         "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+        "/login.js": ("login.js", "text/javascript; charset=utf-8"),
         "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     }
+    public_files = {"/styles.css", "/login.js", "/favicon.svg"}
 
     def log_message(self, fmt: str, *args: object) -> None:
         LOG.info("%s - %s", self.client_address[0], fmt % args)
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        existing_session = self._current_session()
+        if path == "/login":
+            if existing_session is not None:
+                self._redirect("/")
+            else:
+                self._serve_static(*self.static_files[path], cache_public=False)
+            return
+        if path in self.public_files:
+            self._serve_static(*self.static_files[path], cache_public=True)
+            return
+        session = existing_session or self._require_auth(path)
+        if session is None:
+            return
         if path == "/stream.mjpg":
-            self._serve_stream()
+            self._serve_stream(session)
         elif path == "/api/status":
             self._send_json(self.server.stream.status())
+        elif path == "/api/session":
+            self._send_json(
+                {"username": session.username, "csrf_token": session.csrf_token}
+            )
+        elif path == "/api/system":
+            self._send_json(self.server.system_monitor.snapshot())
         elif path == "/api/recordings":
             self._send_json({"recordings": self.server.stream.recordings.list()})
         elif path == "/healthz":
@@ -351,22 +498,37 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             self._serve_snapshot()
         elif path.startswith("/api/recordings/") and path.endswith("/stream.mjpg"):
             recording_id = path.split("/")[3]
-            self._serve_recording(recording_id)
+            self._serve_recording(recording_id, session)
         elif path.startswith("/api/recordings/") and path.endswith("/download"):
             recording_id = path.split("/")[3]
-            self._serve_recording_download(recording_id)
+            self._serve_recording_download(recording_id, session)
         elif path in self.static_files:
-            self._serve_static(*self.static_files[path])
+            self._serve_static(*self.static_files[path], cache_public=False)
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if path == "/api/login":
+            self._login()
+            return
+        session = self._require_auth(path)
+        if session is None or not self._require_csrf(session):
+            return
         try:
-            if path == "/api/camera":
+            if path == "/api/logout":
+                self.server.authenticator.logout(session)
+                self._send_json(
+                    {"logged_out": True},
+                    headers={
+                        "Set-Cookie": self.server.authenticator.clear_cookie_header(),
+                        "Clear-Site-Data": '"cache", "cookies", "storage"',
+                    },
+                )
+            elif path == "/api/camera":
                 payload = self._read_json()
                 enabled = self._required_bool(payload, "enabled")
-                self._send_json(self.server.stream.set_enabled(enabled))
+                self._send_json(self.server.set_camera_enabled(enabled))
             elif path == "/api/detection":
                 payload = self._read_json()
                 ai = self._optional_bool(payload, "ai_enabled")
@@ -376,15 +538,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError(
                         "ai_enabled, motion_enabled, or motion_sensitivity is required"
                     )
-                detection = self.server.stream.detection
-                if detection is None:
-                    self._send_json(
-                        {"error": "detection is unavailable"},
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                    )
-                    return
                 self._send_json(
-                    detection.set_enabled(
+                    self.server.set_detection(
                         ai=ai, motion=motion, sensitivity=sensitivity
                     )
                 )
@@ -405,16 +560,32 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
                 self._send_json(recording)
+            elif path == "/api/system/reboot":
+                payload = self._read_json()
+                if payload.get("confirm") != "reboot":
+                    raise ValueError("reboot confirmation is required")
+                scheduled = self.server.system_controller.schedule_reboot()
+                self._send_json(
+                    {"rebooting": True, "already_pending": not scheduled},
+                    HTTPStatus.ACCEPTED,
+                )
             else:
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        except OSError as exc:
+        except OSError:
             LOG.exception("Device control failed")
-            self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._send_json(
+                {"error": "device control failed"}, HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.SERVICE_UNAVAILABLE)
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        session = self._require_auth(path)
+        if session is None or not self._require_csrf(session):
+            return
         if not path.startswith("/api/recordings/"):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -432,7 +603,65 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"deleted": recording_id})
 
+    def _login(self) -> None:
+        try:
+            payload = self._read_json()
+            username, password = payload.get("username"), payload.get("password")
+            if not isinstance(username, str) or not isinstance(password, str):
+                raise ValueError("username and password are required")
+            session = self.server.authenticator.login(
+                username, password, self.client_address[0]
+            )
+        except LoginRateLimited as exc:
+            self._send_json(
+                {"error": "too many login attempts; try again shortly"},
+                HTTPStatus.TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(exc.retry_after)},
+            )
+            return
+        except (ValueError, json.JSONDecodeError):
+            self._send_json(
+                {"error": "username and password are required"},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if session is None:
+            self._send_json(
+                {"error": "invalid username or password"}, HTTPStatus.UNAUTHORIZED
+            )
+            return
+        self._send_json(
+            {"authenticated": True, "username": session.username},
+            headers={"Set-Cookie": self.server.authenticator.set_cookie_header(session)},
+        )
+
+    def _current_session(self) -> AuthSession | None:
+        return self.server.authenticator.session_from_cookie(self.headers.get("Cookie"))
+
+    def _require_auth(self, path: str) -> AuthSession | None:
+        session = self._current_session()
+        if session is not None:
+            return session
+        if path in {"/", "/index.html"}:
+            self._redirect("/login")
+        else:
+            self._send_json(
+                {"error": "authentication required"}, HTTPStatus.UNAUTHORIZED
+            )
+        return None
+
+    def _require_csrf(self, session: AuthSession) -> bool:
+        if self.server.authenticator.csrf_matches(
+            session, self.headers.get("X-CSRF-Token")
+        ):
+            return True
+        self._send_json({"error": "invalid CSRF token"}, HTTPStatus.FORBIDDEN)
+        return False
+
     def _read_json(self) -> dict[str, object]:
+        content_type = self.headers.get("Content-Type", "").partition(";")[0].lower()
+        if content_type != "application/json":
+            raise ValueError("Content-Type must be application/json")
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
@@ -474,23 +703,50 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        if self.server.secure_transport:
+            self.send_header(
+                "Strict-Transport-Security", "max-age=31536000"
+            )
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'",
+            "default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; "
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+            "frame-ancestors 'none'",
         )
 
     def _send_json(
-        self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK
+        self,
+        payload: dict[str, object],
+        status: HTTPStatus = HTTPStatus.OK,
+        *,
+        headers: dict[str, str] | None = None,
     ) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self._base_headers("application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_static(self, filename: str, content_type: str) -> None:
+    def _redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self._base_headers("text/plain; charset=utf-8")
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _serve_static(
+        self, filename: str, content_type: str, *, cache_public: bool
+    ) -> None:
         try:
             body = (STATIC_ROOT / filename).read_bytes()
         except OSError:
@@ -498,7 +754,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             return
         self.send_response(HTTPStatus.OK)
         self._base_headers(content_type)
-        self.send_header("Cache-Control", "public, max-age=3600")
+        cache_control = "public, max-age=3600" if cache_public else "no-store"
+        self.send_header("Cache-Control", cache_control)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -518,7 +775,9 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(frame)
 
-    def _serve_recording_download(self, recording_id: str) -> None:
+    def _serve_recording_download(
+        self, recording_id: str, session: AuthSession
+    ) -> None:
         try:
             path = self.server.stream.recordings.path(recording_id)
         except ValueError as exc:
@@ -533,9 +792,13 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(path.stat().st_size))
         self.end_headers()
         with path.open("rb") as recording:
-            shutil.copyfileobj(recording, self.wfile)
+            while self.server.authenticator.is_active(session):
+                chunk = recording.read(256 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
 
-    def _serve_recording(self, recording_id: str) -> None:
+    def _serve_recording(self, recording_id: str, session: AuthSession) -> None:
         try:
             path = self.server.stream.recordings.path(recording_id)
         except ValueError as exc:
@@ -551,6 +814,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         interval = 1.0 / self.server.stream.recordings.fps
         try:
             for frame in self.server.stream.recordings.frames(recording_id):
+                if not self.server.authenticator.is_active(session):
+                    break
                 started = time.monotonic()
                 self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode())
@@ -560,7 +825,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass
 
-    def _serve_stream(self) -> None:
+    def _serve_stream(self, session: AuthSession) -> None:
         self.send_response(HTTPStatus.OK)
         self._base_headers("multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -570,7 +835,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         sequence = -1
         self.server.stream.add_client()
         try:
-            while True:
+            while self.server.authenticator.is_active(session):
                 frame, current_sequence = self.server.stream.wait_for_frame(sequence)
                 if frame is None or current_sequence == sequence:
                     continue
@@ -593,17 +858,39 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="validate configuration and camera command, then exit",
     )
+    parser.add_argument(
+        "--hash-password",
+        action="store_true",
+        help="prompt for a password and print a salted verifier, then exit",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.hash_password:
+        password = getpass.getpass("New dashboard password: ")
+        confirmation = getpass.getpass("Confirm dashboard password: ")
+        if password != confirmation:
+            print("Passwords do not match", file=sys.stderr)
+            return 2
+        try:
+            print(hash_password(password))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(message)s",
     )
     try:
         config = Config.from_environment()
+        tls_config = TLSConfig.from_environment(config.host)
+        auth_config = AuthConfig.from_environment(
+            secure_transport=tls_config.secure_transport
+        )
+        tls_context = tls_config.context()
     except ValueError as exc:
         LOG.error("Configuration is invalid: %s", exc)
         return 2
@@ -625,11 +912,46 @@ def main() -> int:
 
     try:
         detection = DetectionEngine()
+        defaults = DeviceSettings(
+            camera_enabled=True,
+            ai_enabled=detection.ai_enabled,
+            motion_enabled=detection.motion_enabled,
+            motion_sensitivity=detection.motion_sensitivity,
+        )
+        settings_store = SettingsStore(
+            os.getenv(
+                "CAMERA_SETTINGS_FILE", str(ROOT / "state" / "device-settings.json")
+            ),
+            defaults,
+        )
+        saved_settings = settings_store.current
+        detection.set_enabled(
+            ai=saved_settings.ai_enabled,
+            motion=saved_settings.motion_enabled,
+            sensitivity=saved_settings.motion_sensitivity,
+        )
+        LOG.info(
+            "Restored device settings: camera=%s ai=%s motion=%s sensitivity=%d",
+            saved_settings.camera_enabled,
+            saved_settings.ai_enabled,
+            saved_settings.motion_enabled,
+            saved_settings.motion_sensitivity,
+        )
     except ValueError as exc:
-        LOG.error("Detection configuration is invalid: %s", exc)
+        LOG.error("Detection or saved settings configuration is invalid: %s", exc)
         return 2
-    stream = CameraStream(config, detection)
-    server = CameraHTTPServer((config.host, config.port), stream)
+    stream = CameraStream(
+        config, detection, initial_enabled=saved_settings.camera_enabled
+    )
+    server = CameraHTTPServer(
+        (config.host, config.port),
+        stream,
+        Authenticator(auth_config),
+        settings_store=settings_store,
+        secure_transport=tls_config.secure_transport,
+    )
+    if tls_context is not None:
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     stopping = threading.Event()
 
     def request_shutdown(signum: int, _frame: object) -> None:
@@ -644,7 +966,8 @@ def main() -> int:
 
     detection.start()
     stream.start()
-    LOG.info("Viewer available at http://%s:%d", config.host, config.port)
+    scheme = "https" if tls_config.enabled else "http"
+    LOG.info("Viewer available at %s://%s:%d", scheme, config.host, config.port)
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
