@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from camera_server import CameraStream, Config, TLSConfig
+from camera_server import CameraStream, Config, TLSConfig, parse_byte_range
 
 
 class ConfigTests(unittest.TestCase):
@@ -44,6 +44,13 @@ class ConfigTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "requires CAMERA_HOST"):
                 TLSConfig.from_environment("0.0.0.0")
+
+    def test_video_byte_ranges_support_browser_seeking(self):
+        self.assertEqual(parse_byte_range("bytes=10-19", 100), (10, 19))
+        self.assertEqual(parse_byte_range("bytes=90-", 100), (90, 99))
+        self.assertEqual(parse_byte_range("bytes=-10", 100), (90, 99))
+        with self.assertRaisesRegex(ValueError, "invalid byte range"):
+            parse_byte_range("bytes=100-110", 100)
 
 
 class StreamTests(unittest.TestCase):

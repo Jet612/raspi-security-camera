@@ -7,8 +7,8 @@
     <meta name="color-scheme" content="dark">
     <title>Recordings · Sentinel</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=8">
-    <script src="/app.js?v=8" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=9">
+    <script src="/app.js?v=9" defer></script>
   </head>
   <body data-page="recordings">
     <div class="app-shell">
@@ -29,7 +29,7 @@
         </main>
       </div>
     </div>
-    <dialog id="playback-dialog" class="playback-dialog"><div class="dialog-heading"><div><span class="panel-kicker">High-quality recording</span><h2 id="playback-title">Recording</h2></div><button id="close-playback" class="close-button" type="button" aria-label="Close playback">×</button></div><div class="playback-stage"><img id="playback-stream" alt="Recorded camera footage"></div><p>Playback uses the recording’s original capture quality.</p></dialog>
+    <dialog id="playback-dialog" class="playback-dialog"><div class="dialog-heading"><div><span class="panel-kicker">High-quality recording</span><h2 id="playback-title">Recording</h2></div><button id="close-playback" class="close-button" type="button" aria-label="Close playback">×</button></div><div class="playback-stage"><video id="playback-video" controls playsinline preload="metadata" hidden></video><img id="playback-stream" alt="Recorded camera footage" hidden></div><p id="playback-detail">Use the player controls to pause or move through the recording.</p></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </body>
 </html>

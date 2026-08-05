@@ -78,6 +78,12 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('apt-cache show "$polkit_package"', service_installer)
         self.assertIn('"$polkit_package"', service_installer)
 
+    def test_installer_includes_mp4_conversion_dependency(self):
+        service_installer = (ROOT / "install-service.sh").read_text()
+
+        self.assertIn("    ffmpeg \\\n", service_installer)
+        self.assertIn("for command in ffmpeg git openssl", service_installer)
+
     def test_update_help_is_safe_off_device(self):
         result = subprocess.run(
             ["bash", str(ROOT / "update.sh"), "--help"],

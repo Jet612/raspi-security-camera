@@ -172,9 +172,15 @@ people; motion detection reacts to any visible image change.
 
 Open the **Recordings** page to see saved clips.
 
-- **Play** watches a completed recording in the dashboard.
-- **Download** saves the raw `.mjpeg` file to the viewing device. VLC can play
-  this format directly.
+- **Play** opens a standard video player. You can pause, resume, scrub through
+  the timeline, change playback speed, use picture-in-picture, or go full screen.
+- **Download** saves a widely compatible H.264 `.mp4` file to the viewing
+  device. Phones, computers, browsers, VLC, and most video editors can open it.
+- A newly stopped recording briefly shows **Preparing MP4**. You can keep using
+  the camera while this finishes; Play and Download become available automatically.
+- Recordings made by an older app version are converted automatically after the
+  service starts. They are kept as `.mjpeg` if conversion fails, so footage is
+  never deleted just because FFmpeg needs repair.
 - **×** permanently deletes that recording from the Pi.
 
 Recordings use the Pi's microSD card. Check the Storage value on the **System**
@@ -588,12 +594,18 @@ custom pipeline. It must continuously emit JPEG images to stdout.
 
 ## Recordings
 
-Recordings use raw MJPEG so the high-quality source frames can be written
-directly without a second camera process or FFmpeg. The lower-quality live
-preview is generated separately and is never written to a recording. The
-dashboard replays recordings at `CAMERA_FPS`. Downloads use the `.mjpeg` format;
-VLC and FFmpeg can open or convert it. Turning the camera off safely stops and
-saves an active recording.
+While recording, high-quality source frames are written directly to a temporary
+raw MJPEG file so camera capture stays responsive. After recording stops, a
+single background worker converts it to H.264 MP4 with FFmpeg and then removes
+the raw copy. This gives the browser a real video timeline for pause and scrub
+controls while keeping the MP4 broadly compatible. The lower-quality live
+preview is generated separately and is never written to a recording.
+
+The easy installer installs FFmpeg automatically. If this feature was added by
+a dashboard update to an older installation, rerun the easy installer once to
+install the new system package, then restart the service. Existing raw MJPEG
+recordings are discovered and converted one at a time on startup. Turning the
+camera off safely stops and saves an active recording.
 The installed systemd service grants write access to the default `./recordings`
 directory; a custom `RECORDINGS_DIR` also needs a matching `ReadWritePaths` entry
 in the service unit.
@@ -614,8 +626,9 @@ and DELETE endpoints also require the session's `X-CSRF-Token` header.
 - `POST /api/update` with `{"confirm":"update"}` - start a safe fast-forward update
 - `GET /api/recordings` - list local recordings
 - `POST /api/recordings/start` and `/api/recordings/stop` - recording control
-- `GET /api/recordings/<id>/stream.mjpg` - browser playback
-- `GET /api/recordings/<id>/download` - download raw MJPEG
+- `GET /api/recordings/<id>/video.mp4` - seekable MP4 playback with byte ranges
+- `GET /api/recordings/<id>/stream.mjpg` - legacy MJPEG playback fallback
+- `GET /api/recordings/<id>/download` - download MP4 or a legacy MJPEG fallback
 - `DELETE /api/recordings/<id>` - delete a recording
 - `GET /stream.mjpg` - live stream
 - `GET /snapshot.jpg` - latest frame

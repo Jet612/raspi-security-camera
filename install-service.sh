@@ -99,6 +99,7 @@ if [[ "$install_dependencies" == true ]]; then
     git \
     ca-certificates \
     curl \
+    ffmpeg \
     rpicam-apps \
     python3-opencv \
     python3-numpy \
@@ -155,7 +156,7 @@ write_environment() {
   sudo install -m 0640 -o root -g "$service_group" "$temporary_environment" "$environment_file"
 }
 
-for command in git openssl python3 sed systemctl busctl; do
+for command in ffmpeg git openssl python3 sed systemctl busctl; do
   if ! command -v "$command" >/dev/null 2>&1; then
     die "$command is required but was not found. Re-run without --skip-dependencies."
   fi

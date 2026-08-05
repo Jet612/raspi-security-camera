@@ -361,8 +361,17 @@ function initializeCameraPage() {
     recordButton.disabled = true;
     try {
       const active = Boolean(latestStatus?.recording?.active);
-      await api(active ? "/api/recordings/stop" : "/api/recordings/start", { method: "POST" });
-      showToast(active ? "High-quality recording saved" : "High-quality recording started");
+      const recording = await api(
+        active ? "/api/recordings/stop" : "/api/recordings/start",
+        { method: "POST" },
+      );
+      if (!active) {
+        showToast("High-quality recording started");
+      } else if (recording.processing) {
+        showToast("Recording stopped; preparing MP4");
+      } else {
+        showToast("Recording saved as MJPEG; rerun the installer to enable MP4");
+      }
       await refreshStatus();
     } catch (error) {
       showToast(error.message, true);
@@ -391,8 +400,10 @@ function initializeCameraPage() {
 const recordingsList = $("#recordings-list");
 const refreshRecordingsButton = $("#refresh-recordings");
 const playbackDialog = $("#playback-dialog");
+const playbackVideo = $("#playback-video");
 const playbackStream = $("#playback-stream");
 const playbackTitle = $("#playback-title");
+const playbackDetail = $("#playback-detail");
 const closePlaybackButton = $("#close-playback");
 
 function createButton(label, className, handler) {
@@ -406,11 +417,24 @@ function createButton(label, className, handler) {
 
 function openPlayback(recording) {
   playbackTitle.textContent = new Date(recording.started_at).toLocaleString();
-  playbackStream.src = `/api/recordings/${recording.id}/stream.mjpg?v=${Date.now()}`;
+  const isMp4 = recording.format === "mp4";
+  playbackVideo.hidden = !isMp4;
+  playbackStream.hidden = isMp4;
+  if (isMp4) {
+    playbackDetail.textContent = "Use the player controls to pause, scrub, or change playback speed.";
+    playbackVideo.src = `/api/recordings/${recording.id}/video.mp4`;
+    playbackVideo.load();
+  } else {
+    playbackDetail.textContent = "This legacy MJPEG clip has basic playback. Restart after installing FFmpeg to convert it to MP4.";
+    playbackStream.src = `/api/recordings/${recording.id}/stream.mjpg?v=${Date.now()}`;
+  }
   playbackDialog.showModal();
 }
 
 function closePlayback() {
+  playbackVideo.pause();
+  playbackVideo.removeAttribute("src");
+  playbackVideo.load();
   playbackDialog.close();
   playbackStream.removeAttribute("src");
 }
@@ -450,17 +474,29 @@ function renderRecordings(recordings) {
     const title = document.createElement("strong");
     title.textContent = new Date(recording.started_at).toLocaleString();
     const meta = document.createElement("span");
-    meta.textContent = `${formatDuration(recording.duration_seconds)} · ${formatBytes(recording.bytes)}${recording.active ? " · Recording now" : ""}`;
+    const state = recording.active
+      ? "Recording now"
+      : recording.processing
+        ? "Preparing MP4"
+        : recording.format === "mp4" ? "MP4" : "Legacy MJPEG";
+    meta.textContent = `${formatDuration(recording.duration_seconds)} · ${formatBytes(recording.bytes)} · ${state}`;
     const actions = document.createElement("div");
     actions.className = "recording-actions";
-    const play = createButton(recording.active ? "In progress" : "Play", "button button-secondary", () => openPlayback(recording));
-    play.disabled = Boolean(recording.active);
+    const unavailable = Boolean(recording.active || recording.processing);
+    const playLabel = recording.active ? "In progress" : recording.processing ? "Preparing" : "Play";
+    const play = createButton(playLabel, "button button-secondary", () => openPlayback(recording));
+    play.disabled = unavailable;
     const download = document.createElement("a");
     download.className = "button button-secondary";
-    download.href = `/api/recordings/${recording.id}/download`;
-    download.textContent = "Download";
+    if (unavailable) {
+      download.setAttribute("aria-disabled", "true");
+      download.addEventListener("click", (event) => event.preventDefault());
+    } else {
+      download.href = `/api/recordings/${recording.id}/download`;
+    }
+    download.textContent = recording.processing ? "Preparing" : "Download";
     const remove = createButton("Delete", "button button-danger", () => deleteRecording(recording));
-    remove.disabled = Boolean(recording.active);
+    remove.disabled = unavailable;
     actions.append(play, download, remove);
     body.append(title, meta, actions);
     card.append(preview, body);
@@ -483,10 +519,13 @@ async function loadRecordings() {
 function initializeRecordingsPage() {
   refreshRecordingsButton.addEventListener("click", loadRecordings);
   closePlaybackButton.addEventListener("click", closePlayback);
+  playbackVideo.addEventListener("error", () => {
+    showToast("This MP4 could not be played in the browser", true);
+  });
   playbackDialog.addEventListener("click", (event) => {
     if (event.target === playbackDialog) closePlayback();
   });
-  visibleInterval(loadRecordings, 15000);
+  visibleInterval(loadRecordings, 5000);
   visibleInterval(refreshStatus, 5000);
 }
 

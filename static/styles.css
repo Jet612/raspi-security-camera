@@ -200,7 +200,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 .dialog-heading { min-height: 72px; padding: 0 18px; display: flex; align-items: center; justify-content: space-between; }
 .close-button { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .025); color: var(--muted); font-size: 20px; cursor: pointer; }
 .playback-stage { margin: 0 14px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border-radius: 10px; background: #050607; }
-.playback-stage img { width: 100%; height: 100%; object-fit: contain; }
+.playback-stage video, .playback-stage img { width: 100%; height: 100%; object-fit: contain; }
 .playback-dialog > p { margin: 14px 18px 18px; color: var(--muted); font-size: 11px; }
 .confirm-dialog { width: min(410px, calc(100vw - 32px)); padding: 29px; border: 1px solid var(--line-strong); border-radius: 14px; background: #101419; color: var(--text); text-align: center; box-shadow: 0 40px 120px #000; }
 .confirm-icon { width: 46px; height: 46px; margin: 0 auto 18px; display: grid; place-items: center; border-radius: 11px; background: rgba(255, 112, 106, .08); color: var(--red); }

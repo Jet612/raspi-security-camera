@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from unittest.mock import patch
@@ -75,7 +76,9 @@ class HTTPTests(unittest.TestCase):
         )
         with patch.dict(os.environ, {"AI_ENABLED": "false"}, clear=True):
             detection = DetectionEngine()
-        recordings = RecordingManager(cls.recording_directory.name, fps=20)
+        recordings = RecordingManager(
+            cls.recording_directory.name, fps=20, ffmpeg_binary=None
+        )
         cls.stream = CameraStream(config, detection, recordings)
         cls.settings_store = SettingsStore(
             os.path.join(cls.recording_directory.name, "device-settings.json"),
@@ -277,6 +280,34 @@ class HTTPTests(unittest.TestCase):
         with urlopen(self.request("/snapshot.jpg"), timeout=2) as response:
             self.assertEqual(response.read(), b"jpeg-data")
             self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_mp4_playback_supports_timeline_byte_ranges(self):
+        recording_id = "20260101T000000"
+        video_path = Path(self.recording_directory.name) / f"{recording_id}.mp4"
+        video_path.write_bytes(b"0123456789abcdef")
+        request = self.request(
+            f"/api/recordings/{recording_id}/video.mp4",
+            headers={"Range": "bytes=4-7"},
+        )
+        with urlopen(request, timeout=2) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.headers["Content-Type"], "video/mp4")
+            self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+            self.assertEqual(response.headers["Content-Range"], "bytes 4-7/16")
+            self.assertEqual(response.read(), b"4567")
+
+    def test_mp4_download_uses_common_filename_and_content_type(self):
+        recording_id = "20260101T000001"
+        video_path = Path(self.recording_directory.name) / f"{recording_id}.mp4"
+        video_path.write_bytes(b"mp4-data")
+        with urlopen(
+            self.request(f"/api/recordings/{recording_id}/download"), timeout=2
+        ) as response:
+            self.assertEqual(response.headers["Content-Type"], "video/mp4")
+            self.assertIn(
+                f"{recording_id}.mp4", response.headers["Content-Disposition"]
+            )
+            self.assertEqual(response.read(), b"mp4-data")
 
     def test_missing_route_is_404_after_authentication(self):
         with self.assertRaises(HTTPError) as raised:

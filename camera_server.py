@@ -75,6 +75,32 @@ def env_bool(name: str, default: bool = False) -> bool:
     raise ValueError(f"{name} must be true or false")
 
 
+def parse_byte_range(value: str | None, total_bytes: int) -> tuple[int, int] | None:
+    """Parse one HTTP byte range and return an inclusive start/end pair."""
+    if not value:
+        return None
+    if total_bytes <= 0 or not value.startswith("bytes=") or "," in value:
+        raise ValueError("invalid byte range")
+    first, separator, last = value[6:].partition("-")
+    if not separator or (not first and not last):
+        raise ValueError("invalid byte range")
+    try:
+        if not first:
+            suffix = int(last)
+            if suffix <= 0:
+                raise ValueError("invalid byte range")
+            start = max(0, total_bytes - suffix)
+            end = total_bytes - 1
+        else:
+            start = int(first)
+            end = int(last) if last else total_bytes - 1
+    except ValueError as exc:
+        raise ValueError("invalid byte range") from exc
+    if start < 0 or start >= total_bytes or end < start:
+        raise ValueError("invalid byte range")
+    return start, min(end, total_bytes - 1)
+
+
 def is_loopback_host(host: str) -> bool:
     if host.lower() == "localhost":
         return True
@@ -592,6 +618,9 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/recordings/") and path.endswith("/stream.mjpg"):
             recording_id = path.split("/")[3]
             self._serve_recording(recording_id, session)
+        elif path.startswith("/api/recordings/") and path.endswith("/video.mp4"):
+            recording_id = path.split("/")[3]
+            self._serve_recording_video(recording_id, session)
         elif path.startswith("/api/recordings/") and path.endswith("/download"):
             recording_id = path.split("/")[3]
             self._serve_recording_download(recording_id, session)
@@ -960,17 +989,74 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         if path is None:
             self._send_json({"error": "recording not found"}, HTTPStatus.NOT_FOUND)
             return
-        self.send_response(HTTPStatus.OK)
-        self._base_headers("application/octet-stream")
-        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
-        self.send_header("Content-Length", str(path.stat().st_size))
+        content_type = "video/mp4" if path.suffix == ".mp4" else "application/octet-stream"
+        self._serve_recording_file(
+            path,
+            session,
+            content_type,
+            disposition=f'attachment; filename="{path.name}"',
+        )
+
+    def _serve_recording_video(
+        self, recording_id: str, session: AuthSession
+    ) -> None:
+        try:
+            path = self.server.stream.recordings.mp4_path(recording_id)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if path is None:
+            self._send_json(
+                {"error": "MP4 recording is not ready"}, HTTPStatus.NOT_FOUND
+            )
+            return
+        self._serve_recording_file(path, session, "video/mp4")
+
+    def _serve_recording_file(
+        self,
+        path: Path,
+        session: AuthSession,
+        content_type: str,
+        *,
+        disposition: str | None = None,
+    ) -> None:
+        total_bytes = path.stat().st_size
+        try:
+            byte_range = parse_byte_range(self.headers.get("Range"), total_bytes)
+        except ValueError:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self._base_headers(content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Range", f"bytes */{total_bytes}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        start, end = byte_range or (0, total_bytes - 1)
+        status = HTTPStatus.PARTIAL_CONTENT if byte_range else HTTPStatus.OK
+        self.send_response(status)
+        self._base_headers(content_type)
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.send_header("Accept-Ranges", "bytes")
+        if byte_range:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total_bytes}")
+        if disposition:
+            self.send_header("Content-Disposition", disposition)
+        self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
-        with path.open("rb") as recording:
-            while self.server.authenticator.is_active(session):
-                chunk = recording.read(256 * 1024)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+        remaining = end - start + 1
+        try:
+            with path.open("rb") as recording:
+                recording.seek(start)
+                while remaining and self.server.authenticator.is_active(session):
+                    chunk = recording.read(min(256 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
 
     def _serve_recording(self, recording_id: str, session: AuthSession) -> None:
         try:
