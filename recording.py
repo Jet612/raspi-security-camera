@@ -110,6 +110,17 @@ class RecordingManager:
     def close(self) -> None:
         self.stop()
 
+    def set_fps(self, fps: int) -> None:
+        """Update metadata/playback rate only while no recording is active."""
+        if isinstance(fps, bool) or not isinstance(fps, int) or not 1 <= fps <= 60:
+            raise ValueError("recording fps must be an integer between 1 and 60")
+        with self._lock:
+            if self._file is not None:
+                raise RuntimeError(
+                    "stop the active recording before changing recording quality"
+                )
+            self.fps = fps
+
     def write(self, frame: bytes) -> None:
         with self._lock:
             if self._file is None:
@@ -228,6 +239,12 @@ class RecordingManager:
                     yield bytes(buffer[start:end])
                     del buffer[:end]
 
+    def recording_fps(self, recording_id: str) -> int:
+        self._validate_id(recording_id)
+        metadata = self._read_metadata(recording_id) or {}
+        value = metadata.get("fps", self.fps)
+        return value if isinstance(value, int) and 1 <= value <= 60 else self.fps
+
     def _active_status_locked(self) -> dict[str, object]:
         duration = 0.0
         if self._started_at is not None:
@@ -239,6 +256,7 @@ class RecordingManager:
             "duration_seconds": round(max(0.0, duration), 1),
             "frames": self._frames,
             "bytes": self._bytes,
+            "fps": self.fps,
         }
 
     def _write_metadata_locked(self, recording: dict[str, object]) -> None:
@@ -332,6 +350,7 @@ class RecordingManager:
         temporary = self.directory / f".{recording_id}.mp4.part"
         if not source.is_file() or output.is_file() or not self.ffmpeg_binary:
             return
+        recording_fps = self.recording_fps(recording_id)
         command = [
             str(self.ffmpeg_binary),
             "-nostdin",
@@ -342,7 +361,7 @@ class RecordingManager:
             "-f",
             "mjpeg",
             "-framerate",
-            str(self.fps),
+            str(recording_fps),
             "-i",
             str(source),
             "-map",

@@ -151,6 +151,13 @@ Open the **Settings** page for all camera and detection controls.
 
 - **Camera capture:** turns video capture on or off without shutting down the
   dashboard. Turning it off also safely finishes an active recording.
+- **Recordings & snapshots:** choose source resolution, JPEG quality, and frame
+  rate. The recommended default is 1920×1080, Q85, and 30 FPS. Applying a change
+  briefly restarts camera capture; an active recording must be stopped first.
+- **Live preview:** independently choose dashboard resolution, JPEG quality, and
+  frame rate. These settings do not reduce saved-media quality. Inline guidance
+  warns when a choice is likely to increase storage, heat, bandwidth, latency,
+  or dropped frames.
 
 - **AI detection:** looks for security-relevant objects. Without an optional AI
   model, the CPU fallback detects people. A compatible YOLO model adds vehicles
@@ -550,7 +557,7 @@ hailortcli fw-control identify
 | `CAMERA_TRUST_PROXY_HTTPS` | `false` | Use HTTPS-only cookies behind a loopback HTTPS proxy |
 | `CAMERA_WIDTH` | `1920` | High-quality capture, snapshot, and recording width |
 | `CAMERA_HEIGHT` | `1080` | High-quality capture, snapshot, and recording height |
-| `CAMERA_FPS` | `20` | Capture and recording playback frame rate |
+| `CAMERA_FPS` | `30` | Initial capture and recording playback frame rate |
 | `CAMERA_QUALITY` | `85` | Snapshot and recording JPEG quality from 1-100 |
 | `CAMERA_LIVE_WIDTH` | `960` | Maximum live preview width |
 | `CAMERA_LIVE_HEIGHT` | `540` | Maximum live preview height |
@@ -570,6 +577,10 @@ hailortcli fw-control identify
 | `DETECTION_FPS` | `5` | Maximum analyzed frames per second |
 | `RECORDINGS_DIR` | `./recordings` | Local recording storage directory |
 | `LOG_LEVEL` | `INFO` | Python log level |
+
+The camera and live-preview variables provide first-run defaults. Choices saved
+on the Settings page take precedence on later starts and can be changed again
+without editing the service environment.
 
 For the system service, put ordinary overrides in
 `/etc/default/raspi-security-camera` and restart it:
@@ -620,6 +631,8 @@ and DELETE endpoints also require the session's `X-CSRF-Token` header.
 - `GET /api/status` - camera, recording, AI, and motion state
 - `POST /api/camera` with `{"enabled":true}` - turn capture on/off
 - `POST /api/detection` - update detection settings
+- `POST /api/video-settings` - persist and apply capture or live-preview
+  resolution, frame rate, and JPEG quality
 - `GET /api/system` - device resource and OS telemetry
 - `POST /api/system/reboot` with `{"confirm":"reboot"}` - reboot the Pi
 - `GET /api/update` - configured Git upstream and update availability

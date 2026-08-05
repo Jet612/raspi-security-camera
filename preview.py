@@ -64,6 +64,21 @@ class LivePreview:
             self._sequence += 1
             self._condition.notify_all()
 
+    def reconfigure(self, *, width: int, height: int, fps: int, quality: int) -> None:
+        """Apply preview limits without restarting camera capture or this worker."""
+        with self._condition:
+            self.width = width
+            self.height = height
+            self.fps = fps
+            self.quality = quality
+            self._source_frame = None
+            self._frame = None
+            self._frame_times = deque(maxlen=max(60, fps * 6))
+            self._output_size = (width, height)
+            self._source_sequence += 1
+            self._sequence += 1
+            self._condition.notify_all()
+
     def submit(self, frame: bytes) -> None:
         with self._condition:
             if self._passthrough:
@@ -106,7 +121,6 @@ class LivePreview:
             self._enable_passthrough(f"preview encoder unavailable: {exc}")
             return
 
-        interval = 1.0 / self.fps
         last_source_sequence = -1
         next_encode = 0.0
         while not self._stop.is_set():
@@ -133,11 +147,17 @@ class LivePreview:
             with self._condition:
                 frame = self._source_frame
                 last_source_sequence = self._source_sequence
+                width = self.width
+                height = self.height
+                fps = self.fps
+                quality = self.quality
             if frame is None:
                 continue
 
             try:
-                encoded, output_size = self._encode(frame, cv2, np)
+                encoded, output_size = self._encode(
+                    frame, cv2, np, width=width, height=height, quality=quality
+                )
             except Exception as exc:  # Native OpenCV errors vary by platform.
                 self._enable_passthrough(f"preview encoding failed: {exc}")
                 return
@@ -145,15 +165,27 @@ class LivePreview:
             now = time.monotonic()
             with self._condition:
                 self._publish_locked(encoded, now, output_size)
-            next_encode = now + interval
+            next_encode = now + (1.0 / fps)
 
-    def _encode(self, frame: bytes, cv2: Any, np: Any) -> tuple[bytes, tuple[int, int]]:
+    def _encode(
+        self,
+        frame: bytes,
+        cv2: Any,
+        np: Any,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        quality: int | None = None,
+    ) -> tuple[bytes, tuple[int, int]]:
+        width = self.width if width is None else width
+        height = self.height if height is None else height
+        quality = self.quality if quality is None else quality
         image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("camera returned an invalid JPEG")
 
         source_height, source_width = image.shape[:2]
-        scale = min(self.width / source_width, self.height / source_height, 1.0)
+        scale = min(width / source_width, height / source_height, 1.0)
         output_width = max(1, round(source_width * scale))
         output_height = max(1, round(source_height * scale))
         if (output_width, output_height) != (source_width, source_height):
@@ -163,7 +195,7 @@ class LivePreview:
                 interpolation=cv2.INTER_AREA,
             )
         successful, encoded = cv2.imencode(
-            ".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, self.quality]
+            ".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality]
         )
         if not successful:
             raise RuntimeError("OpenCV could not encode the live preview")

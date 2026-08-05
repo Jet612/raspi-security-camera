@@ -11,8 +11,18 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 AI_CATEGORIES = ("person", "vehicle", "animal")
+
+
+def _validated_integer(
+    name: str, value: object, minimum: int, maximum: int
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
 
 
 def _validate_ai_categories(value: object) -> tuple[str, ...]:
@@ -33,13 +43,23 @@ class DeviceSettings:
     motion_enabled: bool
     motion_sensitivity: int
     ai_categories: tuple[str, ...] = AI_CATEGORIES
+    capture_width: int = 1920
+    capture_height: int = 1080
+    capture_fps: int = 30
+    capture_quality: int = 85
+    live_width: int = 960
+    live_height: int = 540
+    live_fps: int = 10
+    live_quality: int = 55
 
     @classmethod
-    def from_json(cls, payload: object) -> "DeviceSettings":
+    def from_json(
+        cls, payload: object, defaults: "DeviceSettings | None" = None
+    ) -> "DeviceSettings":
         if (
             not isinstance(payload, dict)
             or isinstance(payload.get("version"), bool)
-            or payload.get("version") not in {1, SETTINGS_VERSION}
+            or payload.get("version") not in {1, 2, SETTINGS_VERSION}
         ):
             raise ValueError("unsupported or missing settings version")
 
@@ -50,19 +70,56 @@ class DeviceSettings:
             "motion_enabled",
             "motion_sensitivity",
         }
-        if payload["version"] == SETTINGS_VERSION:
+        if payload["version"] >= 2:
             expected.add("ai_categories")
+        if payload["version"] == SETTINGS_VERSION:
+            expected.update(
+                {
+                    "capture_width",
+                    "capture_height",
+                    "capture_fps",
+                    "capture_quality",
+                    "live_width",
+                    "live_height",
+                    "live_fps",
+                    "live_quality",
+                }
+            )
         if set(payload) != expected:
             raise ValueError("settings contain missing or unknown fields")
 
         for name in ("camera_enabled", "ai_enabled", "motion_enabled"):
             if not isinstance(payload[name], bool):
                 raise ValueError(f"{name} must be true or false")
-        sensitivity = payload["motion_sensitivity"]
-        if isinstance(sensitivity, bool) or not isinstance(sensitivity, int):
-            raise ValueError("motion_sensitivity must be an integer")
-        if not 1 <= sensitivity <= 100:
-            raise ValueError("motion_sensitivity must be between 1 and 100")
+        sensitivity = _validated_integer(
+            "motion_sensitivity", payload["motion_sensitivity"], 1, 100
+        )
+        quality_defaults = defaults or cls(True, True, True, 50)
+        quality_values = {
+            "capture_width": quality_defaults.capture_width,
+            "capture_height": quality_defaults.capture_height,
+            "capture_fps": quality_defaults.capture_fps,
+            "capture_quality": quality_defaults.capture_quality,
+            "live_width": quality_defaults.live_width,
+            "live_height": quality_defaults.live_height,
+            "live_fps": quality_defaults.live_fps,
+            "live_quality": quality_defaults.live_quality,
+        }
+        if payload["version"] == SETTINGS_VERSION:
+            ranges = {
+                "capture_width": (320, 4608),
+                "capture_height": (240, 2592),
+                "capture_fps": (1, 60),
+                "capture_quality": (1, 100),
+                "live_width": (320, 1920),
+                "live_height": (240, 1080),
+                "live_fps": (1, 30),
+                "live_quality": (20, 90),
+            }
+            quality_values = {
+                name: _validated_integer(name, payload[name], *limits)
+                for name, limits in ranges.items()
+            }
 
         return cls(
             camera_enabled=payload["camera_enabled"],
@@ -74,6 +131,7 @@ class DeviceSettings:
                 if payload["version"] == 1
                 else _validate_ai_categories(payload["ai_categories"])
             ),
+            **quality_values,
         )
 
     def to_json(self) -> dict[str, object]:
@@ -101,6 +159,14 @@ class SettingsStore:
         motion_enabled: bool | None = None,
         motion_sensitivity: int | None = None,
         ai_categories: list[str] | tuple[str, ...] | None = None,
+        capture_width: int | None = None,
+        capture_height: int | None = None,
+        capture_fps: int | None = None,
+        capture_quality: int | None = None,
+        live_width: int | None = None,
+        live_height: int | None = None,
+        live_fps: int | None = None,
+        live_quality: int | None = None,
     ) -> DeviceSettings:
         with self._lock:
             changes: dict[str, object] = {}
@@ -126,6 +192,21 @@ class SettingsStore:
                 changes["motion_sensitivity"] = motion_sensitivity
             if ai_categories is not None:
                 changes["ai_categories"] = _validate_ai_categories(ai_categories)
+            quality_updates = {
+                "capture_width": (capture_width, 320, 4608),
+                "capture_height": (capture_height, 240, 2592),
+                "capture_fps": (capture_fps, 1, 60),
+                "capture_quality": (capture_quality, 1, 100),
+                "live_width": (live_width, 320, 1920),
+                "live_height": (live_height, 240, 1080),
+                "live_fps": (live_fps, 1, 30),
+                "live_quality": (live_quality, 20, 90),
+            }
+            for name, (value, minimum, maximum) in quality_updates.items():
+                if value is not None:
+                    changes[name] = _validated_integer(
+                        name, value, minimum, maximum
+                    )
 
             updated = replace(self._settings, **changes)
             self._write(updated)
@@ -152,7 +233,7 @@ class SettingsStore:
                 )
             with os.fdopen(file_descriptor, "r", encoding="utf-8") as settings_file:
                 file_descriptor = -1
-                return DeviceSettings.from_json(json.load(settings_file))
+                return DeviceSettings.from_json(json.load(settings_file), defaults)
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"invalid settings file {self.path}: {exc}") from exc
         finally:

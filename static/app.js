@@ -541,8 +541,117 @@ const aiControlDetail = $("#ai-control-detail");
 const motionControlDetail = $("#motion-control-detail");
 const liveQualityValue = $("#live-quality-value");
 const captureQualityValue = $("#capture-quality-value");
+const captureQualityForm = $("#capture-quality-form");
+const captureResolution = $("#capture-resolution");
+const captureFps = $("#capture-fps");
+const captureQuality = $("#capture-quality");
+const captureQualityOutput = $("#capture-quality-output");
+const captureQualityWarning = $("#capture-quality-warning");
+const saveCaptureQuality = $("#save-capture-quality");
+const liveQualityForm = $("#live-quality-form");
+const liveResolution = $("#live-resolution");
+const liveFps = $("#live-fps");
+const liveQuality = $("#live-quality");
+const liveQualityOutput = $("#live-quality-output");
+const liveQualityWarning = $("#live-quality-warning");
+const saveLiveQuality = $("#save-live-quality");
 const settingsAiOverlay = $("#settings-ai-overlay");
 const settingsMotionOverlay = $("#settings-motion-overlay");
+
+let captureQualityDirty = false;
+let liveQualityDirty = false;
+
+function ensureSelectValue(select, value, label) {
+  if (![...select.options].some((option) => option.value === value)) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = `${label} (current)`;
+    select.append(option);
+  }
+  select.value = value;
+}
+
+function resolutionParts(value) {
+  const [width, height] = String(value).split("x").map(Number);
+  return { width, height };
+}
+
+function selectedQuality(kind) {
+  const resolution = kind === "capture" ? captureResolution : liveResolution;
+  const fps = kind === "capture" ? captureFps : liveFps;
+  const quality = kind === "capture" ? captureQuality : liveQuality;
+  return { ...resolutionParts(resolution.value), fps: Number(fps.value), quality: Number(quality.value) };
+}
+
+function setQualityControls(kind, settings) {
+  const resolution = kind === "capture" ? captureResolution : liveResolution;
+  const fps = kind === "capture" ? captureFps : liveFps;
+  const quality = kind === "capture" ? captureQuality : liveQuality;
+  const output = kind === "capture" ? captureQualityOutput : liveQualityOutput;
+  ensureSelectValue(resolution, `${settings.width}x${settings.height}`, `${settings.width} × ${settings.height}`);
+  ensureSelectValue(fps, String(settings.fps), `${settings.fps} FPS`);
+  quality.value = settings.quality;
+  output.value = settings.quality;
+}
+
+function qualitySettings(status, kind) {
+  const settings = status.video_settings?.[kind];
+  if (settings) return settings;
+  const resolution = String(kind === "capture" ? status.capture_resolution : status.live_resolution).match(/(\d+)\D+(\d+)/);
+  return {
+    width: Number(resolution?.[1]) || (kind === "capture" ? 1920 : 960),
+    height: Number(resolution?.[2]) || (kind === "capture" ? 1080 : 540),
+    fps: Number(kind === "capture" ? status.capture_fps : status.live_fps_limit) || (kind === "capture" ? 30 : 10),
+    quality: Number(kind === "capture" ? status.capture_quality : status.live_quality) || (kind === "capture" ? 85 : 55),
+  };
+}
+
+function updateQualityAdvice(kind, status = latestStatus) {
+  const values = selectedQuality(kind);
+  const advisory = kind === "capture" ? captureQualityWarning : liveQualityWarning;
+  const button = kind === "capture" ? saveCaptureQuality : saveLiveQuality;
+  const dirty = kind === "capture" ? captureQualityDirty : liveQualityDirty;
+  const pending = pendingControls.has(`${kind}-quality`);
+  let level = "";
+  let message;
+
+  if (kind === "capture") {
+    const relativeLoad = (values.width * values.height * values.fps) / (1920 * 1080 * 30);
+    if (status?.recording?.active) {
+      level = "critical";
+      message = "Stop the active recording before applying capture changes, so the saved clip keeps one consistent frame rate and quality.";
+    } else if (relativeLoad > 1.8 || (values.width >= 2304 && values.fps > 30)) {
+      level = "critical";
+      message = "Very high capture load may drop frames, increase heat, and fill storage quickly. Test a short recording before relying on it.";
+    } else if (values.width > 1920 || values.fps > 30 || values.quality > 90) {
+      level = "warning";
+      message = "Higher capture settings use more storage and camera bandwidth. Watch temperature and verify recordings stay smooth.";
+    } else if (values.quality < 50 || values.width < 1280) {
+      level = "warning";
+      message = "Low capture quality saves space but may hide faces, plates, and other details in recordings and snapshots.";
+    } else {
+      message = "1080p, Q85, and 30 FPS balances detail, storage, and reliability on Raspberry Pi 5.";
+    }
+    button.disabled = !dirty || pending || Boolean(status?.recording?.active);
+  } else {
+    const relativeLoad = (values.width * values.height * values.fps) / (960 * 540 * 10);
+    if (relativeLoad > 5 || (values.width >= 1920 && values.fps >= 20)) {
+      level = "critical";
+      message = "Very high live settings can add delay and compete with AI detection. Use them only on a fast wired or local connection.";
+    } else if (relativeLoad > 1.5 || values.quality > 65) {
+      level = "warning";
+      message = "Higher live settings use more Pi CPU and network bandwidth. They do not improve saved recordings or snapshots.";
+    } else if (values.quality < 35 || values.width < 640) {
+      level = "warning";
+      message = "Very low live quality is faster, but small details and AI boxes may be harder to see in the dashboard.";
+    } else {
+      message = "540p, Q55, and 10 FPS keeps the dashboard responsive while saved media stays high quality.";
+    }
+    button.disabled = !dirty || pending;
+  }
+  advisory.className = `quality-advisory${level ? ` ${level}` : ""}`;
+  advisory.textContent = message;
+}
 
 function renderSettings(status) {
   if (!cameraToggle) return;
@@ -567,8 +676,49 @@ function renderSettings(status) {
   motionControlDetail.textContent = detection.motion?.enabled
     ? "Monitoring frame changes"
     : "Motion detection is off";
-  liveQualityValue.textContent = `${status.live_resolution || status.resolution} · Q${status.live_quality || "—"}`;
-  captureQualityValue.textContent = `${status.capture_resolution || status.resolution} · Q${status.capture_quality || "—"}`;
+  const captureSettings = qualitySettings(status, "capture");
+  const liveSettings = qualitySettings(status, "live");
+  if (!captureQualityDirty && !pendingControls.has("capture-quality")) setQualityControls("capture", captureSettings);
+  if (!liveQualityDirty && !pendingControls.has("live-quality")) setQualityControls("live", liveSettings);
+  captureQualityValue.textContent = `Current: ${captureSettings.width} × ${captureSettings.height} · Q${captureSettings.quality} · ${captureSettings.fps} FPS`;
+  liveQualityValue.textContent = `Current: ${liveSettings.width} × ${liveSettings.height} · Q${liveSettings.quality} · ${liveSettings.fps} FPS`;
+  updateQualityAdvice("capture", status);
+  updateQualityAdvice("live", status);
+}
+
+function setQualityFormDisabled(kind, disabled) {
+  const controls = kind === "capture"
+    ? [captureResolution, captureFps, captureQuality, saveCaptureQuality]
+    : [liveResolution, liveFps, liveQuality, saveLiveQuality];
+  for (const control of controls) control.disabled = disabled;
+}
+
+async function applyQualitySettings(kind) {
+  const values = selectedQuality(kind);
+  const prefix = kind === "capture" ? "capture" : "live";
+  pendingControls.add(`${kind}-quality`);
+  setQualityFormDisabled(kind, true);
+  try {
+    const status = await api("/api/video-settings", {
+      method: "POST",
+      body: JSON.stringify({
+        [`${prefix}_width`]: values.width,
+        [`${prefix}_height`]: values.height,
+        [`${prefix}_fps`]: values.fps,
+        [`${prefix}_quality`]: values.quality,
+      }),
+    });
+    if (kind === "capture") captureQualityDirty = false;
+    else liveQualityDirty = false;
+    latestStatus = status;
+    showToast(kind === "capture" ? "Recording quality applied; camera capture is restarting" : "Live preview quality applied");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    pendingControls.delete(`${kind}-quality`);
+    setQualityFormDisabled(kind, false);
+    if (latestStatus) renderSettings(latestStatus);
+  }
 }
 
 async function setToggle(control, path, payload, key, label) {
@@ -597,6 +747,30 @@ function initializeSettingsPage() {
   settingsMotionOverlay.addEventListener("change", () => {
     storeBoolean("sentinel.overlay.motion", settingsMotionOverlay.checked);
     showToast(`Motion overlay ${settingsMotionOverlay.checked ? "shown" : "hidden"} on the Camera page`);
+  });
+  const captureControls = [captureResolution, captureFps, captureQuality];
+  for (const control of captureControls) {
+    control.addEventListener("input", () => {
+      captureQualityDirty = true;
+      captureQualityOutput.value = captureQuality.value;
+      updateQualityAdvice("capture");
+    });
+  }
+  const liveControls = [liveResolution, liveFps, liveQuality];
+  for (const control of liveControls) {
+    control.addEventListener("input", () => {
+      liveQualityDirty = true;
+      liveQualityOutput.value = liveQuality.value;
+      updateQualityAdvice("live");
+    });
+  }
+  captureQualityForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void applyQualitySettings("capture");
+  });
+  liveQualityForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void applyQualitySettings("live");
   });
   cameraToggle.addEventListener("change", () => setToggle(cameraToggle, "/api/camera", { enabled: cameraToggle.checked }, "camera", "Camera"));
   aiToggle.addEventListener("change", () => setToggle(aiToggle, "/api/detection", { ai_enabled: aiToggle.checked }, "ai", "AI detection"));

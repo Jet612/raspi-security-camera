@@ -39,6 +39,19 @@ class LivePreviewTests(unittest.TestCase):
         self.assertGreaterEqual(sequence, 1)
         self.assertTrue(preview.status()["passthrough"])
 
+    def test_preview_settings_can_be_reconfigured_at_runtime(self):
+        preview = LivePreview(width=960, height=540, fps=10, quality=55)
+        preview._source_frame = b"old-frame"
+        preview._frame = b"old-preview"
+
+        preview.reconfigure(width=640, height=360, fps=5, quality=40)
+
+        status = preview.status()
+        self.assertEqual(status["resolution"], "640 × 360")
+        self.assertEqual(status["quality"], 40)
+        self.assertIsNone(preview._source_frame)
+        self.assertIsNone(preview._frame)
+
 
 if __name__ == "__main__":
     unittest.main()

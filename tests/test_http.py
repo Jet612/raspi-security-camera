@@ -200,6 +200,10 @@ class HTTPTests(unittest.TestCase):
                     self.assertIn(heading, body)
                     self.assertIn(b"mobile-signout logout-button", body)
                     self.assertIn(b"aria-label=\"Sign out\"", body)
+                    if path == "/settings":
+                        self.assertIn(b"capture-quality-form", body)
+                        self.assertIn(b"live-quality-form", body)
+                        self.assertIn(b"Recommended: 1080p", body)
                     self.assertEqual(response.headers["X-Frame-Options"], "DENY")
                     self.assertEqual(response.headers["Cache-Control"], "no-store")
 
@@ -377,6 +381,49 @@ class HTTPTests(unittest.TestCase):
         self.assertTrue(payload["updating"])
         self.assertEqual(self.system_controller.update_requests, before + 1)
         self.assertGreater(self.software_updater.invalidations, 0)
+
+    def test_video_quality_controls_persist_and_validate_settings(self):
+        _, status = self.request_json(
+            "/api/video-settings",
+            {
+                "capture_width": 1920,
+                "capture_height": 1080,
+                "capture_fps": 30,
+                "capture_quality": 85,
+                "live_width": 640,
+                "live_height": 360,
+                "live_fps": 5,
+                "live_quality": 40,
+            },
+            "POST",
+        )
+        self.assertEqual(status["video_settings"]["capture"]["fps"], 30)
+        self.assertEqual(status["video_settings"]["live"]["width"], 640)
+        self.assertEqual(self.settings_store.current.capture_quality, 85)
+        self.assertEqual(self.settings_store.current.live_quality, 40)
+
+        with self.assertRaises(HTTPError) as raised:
+            self.request_json(
+                "/api/video-settings", {"live_quality": 91}, "POST"
+            )
+        self.assertEqual(raised.exception.code, 400)
+
+    def test_recording_quality_change_is_blocked_during_active_recording(self):
+        self.stream._publish(FRAME)
+        self.request_json("/api/recordings/start", {}, "POST")
+        try:
+            with self.assertRaises(HTTPError) as raised:
+                self.request_json(
+                    "/api/video-settings", {"capture_fps": 20}, "POST"
+                )
+            self.assertEqual(raised.exception.code, 409)
+
+            _, status = self.request_json(
+                "/api/video-settings", {"live_fps": 10}, "POST"
+            )
+            self.assertEqual(status["video_settings"]["live"]["fps"], 10)
+        finally:
+            self.request_json("/api/recordings/stop", {}, "POST")
 
     def test_logout_invalidates_session(self):
         self.request_json("/api/logout", {}, "POST")

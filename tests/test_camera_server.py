@@ -12,6 +12,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.port, 8080)
         self.assertEqual(config.host, "127.0.0.1")
         self.assertEqual((config.width, config.height), (1920, 1080))
+        self.assertEqual(config.framerate, 30)
         self.assertEqual(config.quality, 85)
         self.assertEqual((config.live_width, config.live_height), (960, 540))
         self.assertEqual(config.live_framerate, 10)
@@ -114,6 +115,27 @@ class StreamTests(unittest.TestCase):
 
         self.assertTrue(stream._stop.is_set())
         self.assertTrue(stream._wake.is_set())
+
+    def test_video_quality_can_be_reconfigured_without_recreating_stream(self):
+        stream = CameraStream(self.config)
+
+        status = stream.configure_video(
+            capture_width=1920,
+            capture_height=1080,
+            capture_fps=30,
+            capture_quality=85,
+            live_width=640,
+            live_height=360,
+            live_fps=5,
+            live_quality=40,
+        )
+
+        self.assertEqual(stream.config.width, 1920)
+        self.assertEqual(stream.recordings.fps, 30)
+        self.assertEqual(stream.preview.width, 640)
+        self.assertEqual(stream.preview.fps, 5)
+        self.assertEqual(status["video_settings"]["capture"]["quality"], 85)
+        self.assertEqual(status["video_settings"]["live"]["quality"], 40)
 
 
 if __name__ == "__main__":

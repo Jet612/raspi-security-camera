@@ -20,12 +20,14 @@ class RecordingManagerTests(unittest.TestCase):
 
             self.assertEqual(saved["id"], active["id"])
             self.assertEqual(saved["frames"], 2)
+            self.assertEqual(saved["fps"], 20)
             self.assertFalse(saved["processing"])
             self.assertIn("FFmpeg is unavailable", saved["conversion_error"])
             recordings = manager.list()
             self.assertEqual(len(recordings), 1)
             self.assertEqual(list(manager.frames(active["id"])), [FRAME, FRAME])
             self.assertEqual(recordings[0]["format"], "mjpeg")
+            self.assertEqual(manager.recording_fps(active["id"]), 20)
 
     def test_completed_recording_is_converted_to_mp4(self):
         ffmpeg = shutil.which("ffmpeg")

@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from http import HTTPStatus
@@ -42,6 +42,10 @@ STATIC_ROOT = ROOT / "static"
 JPEG_START = b"\xff\xd8"
 JPEG_END = b"\xff\xd9"
 MAX_JPEG_BYTES = 32 * 1024 * 1024
+
+
+class VideoSettingsConflict(RuntimeError):
+    """A requested capture change is unsafe in the current device state."""
 
 
 @lru_cache(maxsize=16)
@@ -138,7 +142,7 @@ class Config:
             port=env_int("CAMERA_PORT", 8080, 1, 65535),
             width=env_int("CAMERA_WIDTH", 1920, 320, 4608),
             height=env_int("CAMERA_HEIGHT", 1080, 240, 2592),
-            framerate=env_int("CAMERA_FPS", 20, 1, 60),
+            framerate=env_int("CAMERA_FPS", 30, 1, 60),
             quality=env_int("CAMERA_QUALITY", 85, 1, 100),
             sensor_mode=os.getenv("CAMERA_SENSOR_MODE", "2304:1296:10:P"),
             autofocus_mode=autofocus_mode,
@@ -249,6 +253,7 @@ class CameraStream:
             quality=config.live_quality,
         )
         self._condition = threading.Condition()
+        self._capture_lock = threading.Lock()
         self._frame: bytes | None = None
         self._sequence = 0
         self._frame_at = 0.0
@@ -260,6 +265,7 @@ class CameraStream:
         self._enabled = initial_enabled
         self._stop = threading.Event()
         self._wake = threading.Event()
+        self._restart_capture = threading.Event()
         self._thread = threading.Thread(
             target=self._supervise, name="camera-capture", daemon=True
         )
@@ -270,7 +276,8 @@ class CameraStream:
 
     def stop(self) -> None:
         self.request_stop()
-        process = self._process
+        with self._capture_lock:
+            process = self._process
         if process and process.poll() is None:
             process.terminate()
             try:
@@ -305,9 +312,104 @@ class CameraStream:
         self._wake.set()
         if not enabled:
             self.recordings.stop()
-            process = self._process
+            with self._capture_lock:
+                process = self._process
             if process and process.poll() is None:
                 process.terminate()
+        return self.status()
+
+    def configure_video(
+        self,
+        *,
+        capture_width: int | None = None,
+        capture_height: int | None = None,
+        capture_fps: int | None = None,
+        capture_quality: int | None = None,
+        live_width: int | None = None,
+        live_height: int | None = None,
+        live_fps: int | None = None,
+        live_quality: int | None = None,
+    ) -> dict[str, object]:
+        """Apply persisted capture and preview settings at runtime."""
+        with self._capture_lock:
+            current = self.config
+            updated = replace(
+                current,
+                width=current.width if capture_width is None else capture_width,
+                height=current.height if capture_height is None else capture_height,
+                framerate=current.framerate if capture_fps is None else capture_fps,
+                quality=current.quality if capture_quality is None else capture_quality,
+                live_width=current.live_width if live_width is None else live_width,
+                live_height=current.live_height if live_height is None else live_height,
+                live_framerate=(
+                    current.live_framerate if live_fps is None else live_fps
+                ),
+                live_quality=(
+                    current.live_quality if live_quality is None else live_quality
+                ),
+            )
+            capture_changed = (
+                current.width,
+                current.height,
+                current.framerate,
+                current.quality,
+            ) != (
+                updated.width,
+                updated.height,
+                updated.framerate,
+                updated.quality,
+            )
+            live_changed = (
+                current.live_width,
+                current.live_height,
+                current.live_framerate,
+                current.live_quality,
+            ) != (
+                updated.live_width,
+                updated.live_height,
+                updated.live_framerate,
+                updated.live_quality,
+            )
+            if capture_changed:
+                self.recordings.set_fps(updated.framerate)
+            self.config = updated
+            process = self._process
+            restart_running_process = bool(
+                capture_changed and process is not None and process.poll() is None
+            )
+            if restart_running_process:
+                self._restart_capture.set()
+            else:
+                self._restart_capture.clear()
+
+        if live_changed:
+            self.preview.reconfigure(
+                width=updated.live_width,
+                height=updated.live_height,
+                fps=updated.live_framerate,
+                quality=updated.live_quality,
+            )
+        elif capture_changed:
+            self.preview.clear()
+
+        if capture_changed:
+            with self._condition:
+                self._frame = None
+                self._frame_at = 0.0
+                self._frame_times = deque(
+                    maxlen=max(120, updated.framerate * 6)
+                )
+                self._sequence += 1
+                if self._enabled:
+                    self._state = "starting"
+                self._error = None
+                self._condition.notify_all()
+            self._wake.set()
+            if restart_running_process and process is not None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
         return self.status()
 
     def _set_state(self, state: str, error: str | None = None) -> None:
@@ -325,20 +427,26 @@ class CameraStream:
                 self._wake.clear()
                 continue
             try:
-                argv = self.config.capture_argv()
-                LOG.info("Starting camera capture: %s", shlex.join(argv))
-                self._set_state("starting")
-                self._process = subprocess.Popen(
-                    argv,
-                    stdout=subprocess.PIPE,
-                    stderr=None,
-                    bufsize=0,
-                )
-                self._read_frames(self._process)
-                return_code = self._process.wait()
+                with self._capture_lock:
+                    argv = self.config.capture_argv()
+                    LOG.info("Starting camera capture: %s", shlex.join(argv))
+                    self._set_state("starting")
+                    self._process = subprocess.Popen(
+                        argv,
+                        stdout=subprocess.PIPE,
+                        stderr=None,
+                        bufsize=0,
+                    )
+                    process = self._process
+                self._read_frames(process)
+                return_code = process.wait()
                 if self._stop.is_set():
                     break
                 if not self._enabled:
+                    continue
+                if self._restart_capture.is_set():
+                    self._restart_capture.clear()
+                    delay = 1.0
                     continue
                 raise RuntimeError(f"camera process exited with status {return_code}")
             except (FileNotFoundError, OSError, RuntimeError) as exc:
@@ -351,7 +459,8 @@ class CameraStream:
                     break
                 delay = min(delay * 2, 15.0)
             finally:
-                self._process = None
+                with self._capture_lock:
+                    self._process = None
         self._set_state("stopped")
 
     def _read_frames(self, process: subprocess.Popen[bytes]) -> None:
@@ -463,6 +572,22 @@ class CameraStream:
         status["live_quality"] = preview["quality"]
         status["capture_resolution"] = status["resolution"]
         status["capture_quality"] = self.config.quality
+        status["capture_fps"] = self.config.framerate
+        status["live_fps_limit"] = self.config.live_framerate
+        status["video_settings"] = {
+            "capture": {
+                "width": self.config.width,
+                "height": self.config.height,
+                "fps": self.config.framerate,
+                "quality": self.config.quality,
+            },
+            "live": {
+                "width": self.config.live_width,
+                "height": self.config.live_height,
+                "fps": self.config.live_framerate,
+                "quality": self.config.live_quality,
+            },
+        }
         return status
 
 
@@ -526,6 +651,60 @@ class CameraHTTPServer(ThreadingHTTPServer):
                 sensitivity=sensitivity_value,
                 categories=categories,
             )
+
+    def set_video_settings(
+        self,
+        *,
+        capture_width: int | None,
+        capture_height: int | None,
+        capture_fps: int | None,
+        capture_quality: int | None,
+        live_width: int | None,
+        live_height: int | None,
+        live_fps: int | None,
+        live_quality: int | None,
+    ) -> dict[str, object]:
+        capture_change_requested = any(
+            value is not None
+            for value in (
+                capture_width,
+                capture_height,
+                capture_fps,
+                capture_quality,
+            )
+        )
+        updates = {
+            "capture_width": capture_width,
+            "capture_height": capture_height,
+            "capture_fps": capture_fps,
+            "capture_quality": capture_quality,
+            "live_width": live_width,
+            "live_height": live_height,
+            "live_fps": live_fps,
+            "live_quality": live_quality,
+        }
+        with self._settings_lock:
+            if (
+                capture_change_requested
+                and self.stream.recordings.status()["active"]
+            ):
+                raise VideoSettingsConflict(
+                    "stop the active recording before changing recording quality"
+                )
+            if self.settings_store is not None:
+                self.settings_store.update(**updates)
+            try:
+                return self.stream.configure_video(**updates)
+            except RuntimeError as exc:
+                raise VideoSettingsConflict(str(exc)) from exc
+
+    def start_recording(self) -> dict[str, object]:
+        with self._settings_lock:
+            return self.stream.recordings.start()
+
+    def stop_recording(self) -> dict[str, object] | None:
+        with self._settings_lock:
+            return self.stream.recordings.stop()
 
     def get_request(self) -> tuple[object, object]:
         request, address = super().get_request()
@@ -679,6 +858,30 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                         categories=categories,
                     )
                 )
+            elif path == "/api/video-settings":
+                payload = self._read_json()
+                limits = {
+                    "capture_width": (320, 4608),
+                    "capture_height": (240, 2592),
+                    "capture_fps": (1, 60),
+                    "capture_quality": (1, 100),
+                    "live_width": (320, 1920),
+                    "live_height": (240, 1080),
+                    "live_fps": (1, 30),
+                    "live_quality": (20, 90),
+                }
+                unknown = set(payload) - set(limits)
+                if unknown:
+                    raise ValueError(
+                        f"unknown video setting: {sorted(unknown)[0]}"
+                    )
+                values = {
+                    name: self._optional_integer(payload, name, *bounds)
+                    for name, bounds in limits.items()
+                }
+                if all(value is None for value in values.values()):
+                    raise ValueError("at least one video setting is required")
+                self._send_json(self.server.set_video_settings(**values))
             elif path == "/api/recordings/start":
                 if not self.server.stream.status()["online"]:
                     self._send_json(
@@ -686,10 +889,10 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                         HTTPStatus.CONFLICT,
                     )
                     return
-                recording = self.server.stream.recordings.start()
+                recording = self.server.start_recording()
                 self._send_json(recording, HTTPStatus.CREATED)
             elif path == "/api/recordings/stop":
-                recording = self.server.stream.recordings.stop()
+                recording = self.server.stop_recording()
                 if recording is None:
                     self._send_json(
                         {"error": "no recording is active"}, HTTPStatus.CONFLICT
@@ -733,6 +936,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except VideoSettingsConflict as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except OSError:
             LOG.exception("Device control failed")
             self._send_json(
@@ -868,6 +1073,19 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{key} must be a number")
         return float(value)
+
+    @staticmethod
+    def _optional_integer(
+        payload: dict[str, object], key: str, minimum: int, maximum: int
+    ) -> int | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key} must be an integer")
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{key} must be between {minimum} and {maximum}")
+        return value
 
     @staticmethod
     def _optional_string_list(
@@ -1071,7 +1289,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self._base_headers("multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        interval = 1.0 / self.server.stream.recordings.fps
+        interval = 1.0 / self.server.stream.recordings.recording_fps(recording_id)
         try:
             for frame in self.server.stream.recordings.frames(recording_id):
                 if not self.server.authenticator.is_active(session):
@@ -1178,6 +1396,14 @@ def main() -> int:
             motion_enabled=detection.motion_enabled,
             motion_sensitivity=detection.motion_sensitivity,
             ai_categories=detection.ai_categories,
+            capture_width=config.width,
+            capture_height=config.height,
+            capture_fps=config.framerate,
+            capture_quality=config.quality,
+            live_width=config.live_width,
+            live_height=config.live_height,
+            live_fps=config.live_framerate,
+            live_quality=config.live_quality,
         )
         settings_store = SettingsStore(
             os.getenv(
@@ -1194,18 +1420,37 @@ def main() -> int:
         )
         LOG.info(
             "Restored device settings: camera=%s ai=%s categories=%s motion=%s "
-            "sensitivity=%d",
+            "sensitivity=%d capture=%dx%d@%d/Q%d live=%dx%d@%d/Q%d",
             saved_settings.camera_enabled,
             saved_settings.ai_enabled,
             ",".join(saved_settings.ai_categories),
             saved_settings.motion_enabled,
             saved_settings.motion_sensitivity,
+            saved_settings.capture_width,
+            saved_settings.capture_height,
+            saved_settings.capture_fps,
+            saved_settings.capture_quality,
+            saved_settings.live_width,
+            saved_settings.live_height,
+            saved_settings.live_fps,
+            saved_settings.live_quality,
         )
     except ValueError as exc:
         LOG.error("Detection or saved settings configuration is invalid: %s", exc)
         return 2
+    runtime_config = replace(
+        config,
+        width=saved_settings.capture_width,
+        height=saved_settings.capture_height,
+        framerate=saved_settings.capture_fps,
+        quality=saved_settings.capture_quality,
+        live_width=saved_settings.live_width,
+        live_height=saved_settings.live_height,
+        live_framerate=saved_settings.live_fps,
+        live_quality=saved_settings.live_quality,
+    )
     stream = CameraStream(
-        config, detection, initial_enabled=saved_settings.camera_enabled
+        runtime_config, detection, initial_enabled=saved_settings.camera_enabled
     )
     server = CameraHTTPServer(
         (config.host, config.port),
