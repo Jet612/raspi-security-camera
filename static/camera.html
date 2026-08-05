@@ -7,8 +7,8 @@
     <meta name="color-scheme" content="dark">
     <title>Live camera · Sentinel</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=7">
-    <script src="/app.js?v=7" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=8">
+    <script src="/app.js?v=8" defer></script>
   </head>
   <body data-page="camera">
     <div class="app-shell">
@@ -25,14 +25,14 @@
         </nav>
         <div class="sidebar-footer">
           <div class="device-state"><span id="sidebar-device-dot" class="device-dot"></span><span><small>Raspberry Pi</small><strong id="sidebar-device-state">Connecting</strong></span></div>
-          <button id="logout-button" class="icon-button" type="button" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3"></path><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"></path></svg></button>
+          <button id="logout-button" class="icon-button logout-button" type="button" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3"></path><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"></path></svg></button>
         </div>
       </aside>
 
       <div class="workspace">
         <header class="topbar">
           <div><p class="eyebrow">Camera 01</p><h1>Live camera</h1></div>
-          <div id="connection-status" class="status status-waiting" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-label">Connecting</span></div>
+          <div class="topbar-actions"><div id="connection-status" class="status status-waiting" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-label">Connecting</span></div><button class="icon-button mobile-signout logout-button" type="button" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3"></path><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"></path></svg></button></div>
         </header>
 
         <main class="page camera-page">

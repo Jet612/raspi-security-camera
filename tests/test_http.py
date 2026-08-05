@@ -195,6 +195,8 @@ class HTTPTests(unittest.TestCase):
                     body = response.read()
                     self.assertEqual(response.status, 200)
                     self.assertIn(heading, body)
+                    self.assertIn(b"mobile-signout logout-button", body)
+                    self.assertIn(b"aria-label=\"Sign out\"", body)
                     self.assertEqual(response.headers["X-Frame-Options"], "DENY")
                     self.assertEqual(response.headers["Cache-Control"], "no-store")
 

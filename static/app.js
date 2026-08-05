@@ -6,7 +6,7 @@ const statusBox = $("#connection-status");
 const statusLabel = $("#status-label");
 const deviceDot = $("#sidebar-device-dot");
 const deviceState = $("#sidebar-device-state");
-const logoutButton = $("#logout-button");
+const logoutButtons = $$(".logout-button");
 const toast = $("#toast");
 
 let csrfToken = "";
@@ -43,6 +43,10 @@ async function api(path, options = {}) {
 
 function setConnection(kind, label) {
   if (statusBox) statusBox.className = `status status-${kind}`;
+  if (statusBox) {
+    statusBox.setAttribute("aria-label", label);
+    statusBox.title = label;
+  }
   if (statusLabel) statusLabel.textContent = label;
   if (deviceDot) deviceDot.classList.toggle("online", kind === "online");
   if (deviceState) deviceState.textContent = label;
@@ -122,14 +126,16 @@ async function refreshStatus() {
 }
 
 function initializeLogout() {
-  logoutButton?.addEventListener("click", async () => {
-    logoutButton.disabled = true;
-    try {
-      await api("/api/logout", { method: "POST" });
-    } finally {
-      window.location.replace("/login");
-    }
-  });
+  for (const button of logoutButtons) {
+    button.addEventListener("click", async () => {
+      for (const item of logoutButtons) item.disabled = true;
+      try {
+        await api("/api/logout", { method: "POST" });
+      } finally {
+        window.location.replace("/login");
+      }
+    });
+  }
 }
 
 // Camera page
