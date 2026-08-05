@@ -348,7 +348,8 @@ cd raspi-security-camera
 ```
 
 The local installer installs Git, curl, `rpicam-apps`, OpenCV, NumPy, OpenSSL,
-and polkit through Raspberry Pi OS. Pass `--tailscale-serve` to select private
+and the available polkit service package through Raspberry Pi OS. Pass
+`--tailscale-serve` to select private
 remote access without a question, or `--no-tailscale-serve` to skip the question.
 Pass `--skip-dependencies` only when the required packages are already managed
 separately. If the Pi has a Hailo AI HAT, install its optional runtime before or

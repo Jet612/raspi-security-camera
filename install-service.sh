@@ -87,6 +87,10 @@ if [[ "$install_dependencies" == true ]]; then
     die "The apt package manager was not found. Raspberry Pi OS is required."
   info "Installing camera and detection software (this can take a few minutes)"
   sudo apt-get update
+  polkit_package="polkitd"
+  if ! apt-cache show "$polkit_package" >/dev/null 2>&1; then
+    polkit_package="policykit-1"
+  fi
   sudo apt-get install -y \
     git \
     ca-certificates \
@@ -95,7 +99,7 @@ if [[ "$install_dependencies" == true ]]; then
     python3-opencv \
     python3-numpy \
     openssl \
-    policykit-1
+    "$polkit_package"
 fi
 
 unit_template="$project_dir/deploy/raspi-security-camera.service.in"

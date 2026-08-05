@@ -43,6 +43,14 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('camera_host="127.0.0.1"', service_installer)
         self.assertIn("https://tailscale.com/install.sh", service_installer)
 
+    def test_installer_supports_trixie_polkit_package_split(self):
+        service_installer = (ROOT / "install-service.sh").read_text()
+
+        self.assertIn('polkit_package="polkitd"', service_installer)
+        self.assertIn('polkit_package="policykit-1"', service_installer)
+        self.assertIn('apt-cache show "$polkit_package"', service_installer)
+        self.assertIn('"$polkit_package"', service_installer)
+
     def test_update_help_is_safe_off_device(self):
         result = subprocess.run(
             ["bash", str(ROOT / "update.sh"), "--help"],
