@@ -7,7 +7,7 @@
     <meta name="color-scheme" content="dark">
     <title>Settings · Sentinel</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=10">
+    <link rel="stylesheet" href="/styles.css?v=11">
     <script src="/app.js?v=10" defer></script>
   </head>
   <body data-page="settings">
@@ -25,14 +25,17 @@
       <div class="workspace">
         <header class="topbar"><div><p class="eyebrow">Camera 01</p><h1>Settings</h1><p>Capture, detection, and viewer preferences.</p></div><div class="topbar-actions"><div id="connection-status" class="status status-waiting" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-label">Connecting</span></div><button class="icon-button mobile-signout logout-button" type="button" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3"></path><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"></path></svg></button></div></header>
         <main class="page settings-page">
-          <section class="settings-grid">
-            <article class="panel settings-panel">
-              <div class="panel-heading"><div><span class="panel-kicker">Hardware</span><h2>Camera</h2></div></div>
+          <div class="settings-groups">
+            <section class="settings-group" aria-labelledby="camera-video-heading">
+              <div class="settings-group-heading"><span class="panel-kicker">Capture & storage</span><h2 id="camera-video-heading">Camera and video quality</h2><p>Control the camera, saved recording quality, and the lighter live preview separately.</p></div>
+              <div class="settings-grid settings-grid-media">
+            <article class="panel settings-panel camera-control-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">Hardware</span><h3>Camera</h3></div></div>
               <label class="setting-row" for="camera-toggle"><span><strong>Camera capture</strong><small id="camera-control-detail">Capture video, snapshots, and recordings</small></span><span class="switch"><input id="camera-toggle" type="checkbox"><span></span></span></label>
             </article>
 
             <article class="panel settings-panel quality-panel">
-              <div class="panel-heading"><div><span class="panel-kicker">Saved media</span><h2>Recordings & snapshots</h2></div><span class="recommended-badge">Recommended: 1080p</span></div>
+              <div class="panel-heading"><div><span class="panel-kicker">Saved media</span><h3>Recordings & snapshots</h3></div><span class="recommended-badge">Recommended: 1080p</span></div>
               <form id="capture-quality-form" class="quality-form">
                 <div class="quality-fields">
                   <label class="quality-field" for="capture-resolution"><span>Resolution</span><select id="capture-resolution"><option value="1280x720">1280 × 720</option><option value="1920x1080">1920 × 1080</option><option value="2304x1296">2304 × 1296</option></select></label>
@@ -45,7 +48,7 @@
             </article>
 
             <article class="panel settings-panel quality-panel">
-              <div class="panel-heading"><div><span class="panel-kicker">Viewer</span><h2>Live preview</h2></div><span class="recommended-badge">Recommended: 540p</span></div>
+              <div class="panel-heading"><div><span class="panel-kicker">Viewer</span><h3>Live preview</h3></div><span class="recommended-badge">Recommended: 540p</span></div>
               <form id="live-quality-form" class="quality-form">
                 <div class="quality-fields">
                   <label class="quality-field" for="live-resolution"><span>Resolution</span><select id="live-resolution"><option value="640x360">640 × 360</option><option value="854x480">854 × 480</option><option value="960x540">960 × 540</option><option value="1280x720">1280 × 720</option><option value="1920x1080">1920 × 1080</option></select></label>
@@ -56,25 +59,37 @@
                 <div class="quality-footer"><span id="live-quality-value" class="quality-current">Current: —</span><button id="save-live-quality" class="button button-secondary" type="submit" disabled>Apply live quality</button></div>
               </form>
             </article>
+              </div>
+            </section>
 
+            <section class="settings-group" aria-labelledby="detection-heading">
+              <div class="settings-group-heading"><span class="panel-kicker">Activity analysis</span><h2 id="detection-heading">Detection</h2><p>Choose what the camera watches for and how sensitive motion detection should be.</p></div>
+              <div class="settings-grid settings-grid-detection">
             <article class="panel settings-panel">
-              <div class="panel-heading"><div><span class="panel-kicker">Analysis</span><h2>AI detection</h2></div></div>
+              <div class="panel-heading"><div><span class="panel-kicker">Objects</span><h3>AI detection</h3></div></div>
               <label class="setting-row" for="ai-toggle"><span><strong>Object detection</strong><small id="ai-control-detail">Find people, vehicles, and animals</small></span><span class="switch"><input id="ai-toggle" type="checkbox"><span></span></span></label>
               <fieldset id="ai-category-filters" class="filter-setting"><legend>Detection categories</legend><div class="filter-options"><label class="filter-chip"><input type="checkbox" name="ai-category" value="person"><span>People</span></label><label class="filter-chip"><input type="checkbox" name="ai-category" value="vehicle"><span>Vehicles</span></label><label class="filter-chip"><input type="checkbox" name="ai-category" value="animal"><span>Animals</span></label></div><small>Only selected categories create AI boxes and alerts.</small></fieldset>
             </article>
 
             <article class="panel settings-panel">
-              <div class="panel-heading"><div><span class="panel-kicker">Analysis</span><h2>Motion detection</h2></div></div>
+              <div class="panel-heading"><div><span class="panel-kicker">Image changes</span><h3>Motion detection</h3></div></div>
               <label class="setting-row" for="motion-toggle"><span><strong>Motion detection</strong><small id="motion-control-detail">Watch for changes in the image</small></span><span class="switch"><input id="motion-toggle" type="checkbox"><span></span></span></label>
               <label class="sensitivity-row" for="motion-sensitivity"><span><strong>Motion sensitivity</strong><small>Higher values react to smaller changes</small></span><output id="motion-sensitivity-value" for="motion-sensitivity">50</output><input id="motion-sensitivity" type="range" min="1" max="100" value="50"><span class="range-labels"><span>Low</span><span>High</span></span></label>
             </article>
+              </div>
+            </section>
 
+            <section class="settings-group" aria-labelledby="appearance-heading">
+              <div class="settings-group-heading"><span class="panel-kicker">Live camera</span><h2 id="appearance-heading">Viewer appearance</h2><p>Pick which visual guides are shown by default while watching the camera.</p></div>
+              <div class="settings-grid settings-grid-single">
             <article class="panel settings-panel">
-              <div class="panel-heading"><div><span class="panel-kicker">Viewer</span><h2>Overlay defaults</h2></div></div>
+              <div class="panel-heading"><div><span class="panel-kicker">Overlays</span><h3>On-screen indicators</h3></div></div>
               <label class="setting-row" for="settings-ai-overlay"><span><strong>Show AI boxes</strong><small>Display labels and confidence on the live page</small></span><span class="switch"><input id="settings-ai-overlay" type="checkbox"><span></span></span></label>
               <label class="setting-row" for="settings-motion-overlay"><span><strong>Show motion overlay</strong><small>Display the motion indicator on the live page</small></span><span class="switch"><input id="settings-motion-overlay" type="checkbox"><span></span></span></label>
             </article>
-          </section>
+              </div>
+            </section>
+          </div>
         </main>
       </div>
     </div>
