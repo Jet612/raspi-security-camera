@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import gzip
 import ipaddress
 import json
 import logging
@@ -20,6 +21,7 @@ import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +29,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from auth import AuthConfig, AuthSession, Authenticator, LoginRateLimited, hash_password
 from detection import DetectionEngine
+from preview import LivePreview
 from recording import RecordingManager
 from settings import DeviceSettings, SettingsStore
 from software_update import SoftwareUpdater
@@ -39,6 +42,17 @@ STATIC_ROOT = ROOT / "static"
 JPEG_START = b"\xff\xd8"
 JPEG_END = b"\xff\xd9"
 MAX_JPEG_BYTES = 32 * 1024 * 1024
+
+
+@lru_cache(maxsize=16)
+def _read_static_file(filename: str) -> bytes:
+    """Keep versioned frontend assets in memory after their first request."""
+    return (STATIC_ROOT / filename).read_bytes()
+
+
+@lru_cache(maxsize=16)
+def _gzip_static_file(filename: str) -> bytes:
+    return gzip.compress(_read_static_file(filename), compresslevel=6)
 
 
 def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -81,6 +95,10 @@ class Config:
     sensor_mode: str
     autofocus_mode: str
     camera_command: str | None
+    live_width: int = 960
+    live_height: int = 540
+    live_framerate: int = 10
+    live_quality: int = 55
 
     @classmethod
     def from_environment(cls) -> "Config":
@@ -95,10 +113,14 @@ class Config:
             width=env_int("CAMERA_WIDTH", 1920, 320, 4608),
             height=env_int("CAMERA_HEIGHT", 1080, 240, 2592),
             framerate=env_int("CAMERA_FPS", 20, 1, 60),
-            quality=env_int("CAMERA_QUALITY", 75, 1, 100),
+            quality=env_int("CAMERA_QUALITY", 85, 1, 100),
             sensor_mode=os.getenv("CAMERA_SENSOR_MODE", "2304:1296:10:P"),
             autofocus_mode=autofocus_mode,
             camera_command=os.getenv("CAMERA_COMMAND") or None,
+            live_width=env_int("CAMERA_LIVE_WIDTH", 960, 320, 1920),
+            live_height=env_int("CAMERA_LIVE_HEIGHT", 540, 240, 1080),
+            live_framerate=env_int("CAMERA_LIVE_FPS", 10, 1, 30),
+            live_quality=env_int("CAMERA_LIVE_QUALITY", 55, 20, 90),
         )
 
     def capture_argv(self) -> list[str]:
@@ -194,6 +216,12 @@ class CameraStream:
         self.config = config
         self.detection = detection
         self.recordings = recordings or RecordingManager(fps=config.framerate)
+        self.preview = LivePreview(
+            width=config.live_width,
+            height=config.live_height,
+            fps=config.live_framerate,
+            quality=config.live_quality,
+        )
         self._condition = threading.Condition()
         self._frame: bytes | None = None
         self._sequence = 0
@@ -211,13 +239,11 @@ class CameraStream:
         )
 
     def start(self) -> None:
+        self.preview.start()
         self._thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
-        self._wake.set()
-        with self._condition:
-            self._condition.notify_all()
+        self.request_stop()
         process = self._process
         if process and process.poll() is None:
             process.terminate()
@@ -226,7 +252,15 @@ class CameraStream:
             except subprocess.TimeoutExpired:
                 process.kill()
         self._thread.join(timeout=5)
+        self.preview.stop()
         self.recordings.close()
+
+    def request_stop(self) -> None:
+        """Signal workers immediately without waiting for their cleanup."""
+        self._stop.set()
+        self._wake.set()
+        with self._condition:
+            self._condition.notify_all()
 
     def set_enabled(self, enabled: bool) -> dict[str, object]:
         """Turn physical capture on or off while keeping the dashboard available."""
@@ -241,6 +275,7 @@ class CameraStream:
             self._state = "starting" if enabled else "disabled"
             self._error = None
             self._condition.notify_all()
+        self.preview.clear()
         self._wake.set()
         if not enabled:
             self.recordings.stop()
@@ -332,10 +367,13 @@ class CameraStream:
             self._sequence += 1
             self._state = "online"
             self._error = None
+            has_viewers = self._clients > 0
             self._condition.notify_all()
         if self.detection is not None:
             self.detection.submit(frame)
         self.recordings.write(frame)
+        if has_viewers:
+            self.preview.submit(frame)
 
     def wait_for_frame(
         self, last_sequence: int, timeout: float = 10.0
@@ -351,13 +389,24 @@ class CameraStream:
         with self._condition:
             return self._frame
 
+    def wait_for_preview(
+        self, last_sequence: int, timeout: float = 10.0
+    ) -> tuple[bytes | None, int]:
+        return self.preview.wait_for_frame(last_sequence, timeout)
+
     def add_client(self) -> None:
         with self._condition:
             self._clients += 1
+            frame = self._frame
+        if frame is not None:
+            self.preview.submit(frame)
 
     def remove_client(self) -> None:
         with self._condition:
             self._clients = max(0, self._clients - 1)
+            has_viewers = self._clients > 0
+        if not has_viewers:
+            self.preview.clear()
 
     def status(self) -> dict[str, object]:
         now = time.monotonic()
@@ -382,6 +431,12 @@ class CameraStream:
         if self.detection is not None:
             status["detection"] = self.detection.status()
         status["recording"] = self.recordings.status()
+        preview = self.preview.status()
+        status["live_fps"] = preview["fps"]
+        status["live_resolution"] = preview["resolution"]
+        status["live_quality"] = preview["quality"]
+        status["capture_resolution"] = status["resolution"]
+        status["capture_quality"] = self.config.quality
         return status
 
 
@@ -458,8 +513,14 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
     server_version = "Sentinel"
     sys_version = ""
     static_files = {
-        "/": ("index.html", "text/html; charset=utf-8"),
-        "/index.html": ("index.html", "text/html; charset=utf-8"),
+        "/camera": ("camera.html", "text/html; charset=utf-8"),
+        "/camera.html": ("camera.html", "text/html; charset=utf-8"),
+        "/recordings": ("recordings.html", "text/html; charset=utf-8"),
+        "/recordings.html": ("recordings.html", "text/html; charset=utf-8"),
+        "/settings": ("settings.html", "text/html; charset=utf-8"),
+        "/settings.html": ("settings.html", "text/html; charset=utf-8"),
+        "/system": ("system.html", "text/html; charset=utf-8"),
+        "/system.html": ("system.html", "text/html; charset=utf-8"),
         "/login": ("login.html", "text/html; charset=utf-8"),
         "/styles.css": ("styles.css", "text/css; charset=utf-8"),
         "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -467,17 +528,37 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     }
     public_files = {"/styles.css", "/login.js", "/favicon.svg"}
+    private_cache_files = {"/app.js"}
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            # Browsers routinely close idle keep-alive and MJPEG connections.
+            # Treat that as normal client behavior instead of a server error.
+            pass
 
     def log_message(self, fmt: str, *args: object) -> None:
         LOG.info("%s - %s", self.client_address[0], fmt % args)
+
+    def log_error(self, fmt: str, *args: object) -> None:
+        if fmt.startswith("Request timed out"):
+            return
+        super().log_error(fmt, *args)
 
     def do_GET(self) -> None:  # noqa: N802
         request_url = urlsplit(self.path)
         path = request_url.path
         existing_session = self._current_session()
+        if path in {"/", "/index.html"}:
+            if existing_session is None:
+                self._redirect("/login")
+            else:
+                self._redirect("/camera")
+            return
         if path == "/login":
             if existing_session is not None:
-                self._redirect("/")
+                self._redirect("/camera")
             else:
                 self._serve_static(*self.static_files[path], cache_public=False)
             return
@@ -515,7 +596,11 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             recording_id = path.split("/")[3]
             self._serve_recording_download(recording_id, session)
         elif path in self.static_files:
-            self._serve_static(*self.static_files[path], cache_public=False)
+            self._serve_static(
+                *self.static_files[path],
+                cache_public=False,
+                cache_private=path in self.private_cache_files,
+            )
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -688,7 +773,18 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         session = self._current_session()
         if session is not None:
             return session
-        if path in {"/", "/index.html"}:
+        if path in {
+            "/",
+            "/index.html",
+            "/camera",
+            "/camera.html",
+            "/recordings",
+            "/recordings.html",
+            "/settings",
+            "/settings.html",
+            "/system",
+            "/system.html",
+        }:
             self._redirect("/login")
         else:
             self._send_json(
@@ -804,17 +900,36 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _serve_static(
-        self, filename: str, content_type: str, *, cache_public: bool
+        self,
+        filename: str,
+        content_type: str,
+        *,
+        cache_public: bool,
+        cache_private: bool = False,
     ) -> None:
         try:
-            body = (STATIC_ROOT / filename).read_bytes()
+            body = _read_static_file(filename)
         except OSError:
             self._send_json({"error": "asset unavailable"}, HTTPStatus.NOT_FOUND)
             return
+        compressed = (
+            content_type.startswith(("text/", "application/javascript"))
+            and "gzip" in self.headers.get("Accept-Encoding", "").lower()
+        )
+        if compressed:
+            body = _gzip_static_file(filename)
         self.send_response(HTTPStatus.OK)
         self._base_headers(content_type)
-        cache_control = "public, max-age=3600" if cache_public else "no-store"
+        if cache_public:
+            cache_control = "public, max-age=3600"
+        elif cache_private:
+            cache_control = "private, max-age=3600"
+        else:
+            cache_control = "no-store"
         self.send_header("Cache-Control", cache_control)
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -895,7 +1010,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.server.stream.add_client()
         try:
             while self.server.authenticator.is_active(session):
-                frame, current_sequence = self.server.stream.wait_for_frame(sequence)
+                frame, current_sequence = self.server.stream.wait_for_preview(sequence)
                 if frame is None or current_sequence == sequence:
                     continue
                 sequence = current_sequence
@@ -1021,6 +1136,7 @@ def main() -> int:
         if stopping.is_set():
             return
         stopping.set()
+        stream.request_stop()
         LOG.info("Received signal %s; shutting down", signum)
         threading.Thread(target=server.shutdown, daemon=True).start()
 

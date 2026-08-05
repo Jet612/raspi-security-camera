@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0a0c10">
+    <meta name="color-scheme" content="dark">
+    <title>Settings · Sentinel</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css?v=7">
+    <script src="/app.js?v=7" defer></script>
+  </head>
+  <body data-page="settings">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/camera" aria-label="Sentinel live camera"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"></circle><circle cx="16" cy="16" r="5"></circle><path d="M16 4v7M16 21v7M4 16h7M21 16h7"></path></svg></span><span><strong>Sentinel</strong><small>Camera 01</small></span></a>
+        <nav aria-label="Main navigation">
+          <a class="nav-item" href="/camera"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="15" height="12" rx="2"></rect><path d="m18 10 3-2v8l-3-2"></path></svg><span>Camera</span></a>
+          <a class="nav-item" href="/recordings"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m10 9 5 3-5 3Z"></path></svg><span>Recordings</span></a>
+          <a class="nav-item active" href="/settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path></svg><span>Settings</span></a>
+          <a class="nav-item" href="/system"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M9 7h6M9 11h6M9 15h3"></path><circle cx="16" cy="16" r="1"></circle></svg><span>System</span></a>
+        </nav>
+        <div class="sidebar-footer"><div class="device-state"><span id="sidebar-device-dot" class="device-dot"></span><span><small>Raspberry Pi</small><strong id="sidebar-device-state">Connecting</strong></span></div><button id="logout-button" class="icon-button" type="button" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3"></path><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"></path></svg></button></div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar"><div><p class="eyebrow">Camera 01</p><h1>Settings</h1><p>Capture, detection, and viewer preferences.</p></div><div id="connection-status" class="status status-waiting" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-label">Connecting</span></div></header>
+        <main class="page settings-page">
+          <section class="settings-grid">
+            <article class="panel settings-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">Hardware</span><h2>Camera</h2></div></div>
+              <label class="setting-row" for="camera-toggle"><span><strong>Camera capture</strong><small id="camera-control-detail">Capture video, snapshots, and recordings</small></span><span class="switch"><input id="camera-toggle" type="checkbox"><span></span></span></label>
+              <div class="quality-row"><span><strong>Live preview</strong><small>Lower bandwidth for a faster dashboard</small></span><span id="live-quality-value" class="quality-value">—</span></div>
+              <div class="quality-row"><span><strong>Snapshots & recordings</strong><small>Saved from the high-quality source</small></span><span id="capture-quality-value" class="quality-value">—</span></div>
+            </article>
+
+            <article class="panel settings-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">Analysis</span><h2>AI detection</h2></div></div>
+              <label class="setting-row" for="ai-toggle"><span><strong>Object detection</strong><small id="ai-control-detail">Find people, vehicles, and animals</small></span><span class="switch"><input id="ai-toggle" type="checkbox"><span></span></span></label>
+              <fieldset id="ai-category-filters" class="filter-setting"><legend>Detection categories</legend><div class="filter-options"><label class="filter-chip"><input type="checkbox" name="ai-category" value="person"><span>People</span></label><label class="filter-chip"><input type="checkbox" name="ai-category" value="vehicle"><span>Vehicles</span></label><label class="filter-chip"><input type="checkbox" name="ai-category" value="animal"><span>Animals</span></label></div><small>Only selected categories create AI boxes and alerts.</small></fieldset>
+            </article>
+
+            <article class="panel settings-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">Analysis</span><h2>Motion detection</h2></div></div>
+              <label class="setting-row" for="motion-toggle"><span><strong>Motion detection</strong><small id="motion-control-detail">Watch for changes in the image</small></span><span class="switch"><input id="motion-toggle" type="checkbox"><span></span></span></label>
+              <label class="sensitivity-row" for="motion-sensitivity"><span><strong>Motion sensitivity</strong><small>Higher values react to smaller changes</small></span><output id="motion-sensitivity-value" for="motion-sensitivity">50</output><input id="motion-sensitivity" type="range" min="1" max="100" value="50"><span class="range-labels"><span>Low</span><span>High</span></span></label>
+            </article>
+
+            <article class="panel settings-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">Viewer</span><h2>Overlay defaults</h2></div></div>
+              <label class="setting-row" for="settings-ai-overlay"><span><strong>Show AI boxes</strong><small>Display labels and confidence on the live page</small></span><span class="switch"><input id="settings-ai-overlay" type="checkbox"><span></span></span></label>
+              <label class="setting-row" for="settings-motion-overlay"><span><strong>Show motion overlay</strong><small>Display the motion indicator on the live page</small></span><span class="switch"><input id="settings-motion-overlay" type="checkbox"><span></span></span></label>
+            </article>
+          </section>
+        </main>
+      </div>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

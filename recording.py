@@ -101,16 +101,17 @@ class RecordingManager:
             recording_id = video_path.stem
             if not RECORDING_ID.fullmatch(recording_id):
                 continue
+            file_metadata = video_path.stat()
             metadata = self._read_metadata(recording_id)
             if metadata is None:
-                stamp = datetime.fromtimestamp(video_path.stat().st_mtime, timezone.utc)
+                stamp = datetime.fromtimestamp(file_metadata.st_mtime, timezone.utc)
                 metadata = {
                     "id": recording_id,
                     "started_at": stamp.isoformat(),
                     "duration_seconds": 0,
                     "frames": 0,
                 }
-            metadata["bytes"] = video_path.stat().st_size
+            metadata["bytes"] = file_metadata.st_size
             metadata["active"] = active.get("id") == recording_id
             if metadata["active"]:
                 metadata.update(active)

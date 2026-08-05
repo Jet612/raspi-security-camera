@@ -45,6 +45,10 @@ class SystemMonitor:
         self.root = root
         self._lock = threading.Lock()
         self._previous_cpu: tuple[int, int] | None = None
+        self._hostname = socket.gethostname()
+        self._os = self._os_name()
+        self._kernel = platform.release()
+        self._architecture = platform.machine()
 
     def snapshot(self) -> dict[str, object]:
         uptime = self._uptime()
@@ -52,12 +56,11 @@ class SystemMonitor:
         disk = shutil.disk_usage(self.root)
         load = os.getloadavg()
         temperature = self._temperature()
-        os_name = self._os_name()
         return {
-            "hostname": socket.gethostname(),
-            "os": os_name,
-            "kernel": platform.release(),
-            "architecture": platform.machine(),
+            "hostname": self._hostname,
+            "os": self._os,
+            "kernel": self._kernel,
+            "architecture": self._architecture,
             "uptime_seconds": round(uptime),
             "uptime": _format_uptime(uptime),
             "cpu_percent": self._cpu_percent(),

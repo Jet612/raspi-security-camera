@@ -28,7 +28,7 @@ form.addEventListener("submit", async (event) => {
     try { payload = await response.json(); } catch (_) { /* The error below is sufficient. */ }
     if (!response.ok) throw new Error(payload.error || `Sign in failed (${response.status})`);
     password.value = "";
-    window.location.replace("/");
+    window.location.replace("/camera");
   } catch (error) {
     errorBox.textContent = error.message;
     password.select();

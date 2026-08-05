@@ -161,6 +161,12 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 303)
         self.assertEqual(raised.exception.headers["Location"], "/login")
 
+        for path in ("/camera", "/recordings", "/settings", "/system"):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as raised:
+                opener.open(f"{self.base_url}{path}", timeout=2)
+            self.assertEqual(raised.exception.code, 303)
+            self.assertEqual(raised.exception.headers["Location"], "/login")
+
     def test_every_sensitive_get_requires_authentication(self):
         for path in (
             "/api/status",
@@ -170,20 +176,39 @@ class HTTPTests(unittest.TestCase):
             "/stream.mjpg",
             "/snapshot.jpg",
             "/healthz",
-            "/app.js",
         ):
             with self.subTest(path=path):
                 with self.assertRaises(HTTPError) as raised:
                     urlopen(f"{self.base_url}{path}", timeout=2)
                 self.assertEqual(raised.exception.code, 401)
 
-    def test_index_and_security_headers(self):
-        with urlopen(self.request("/"), timeout=2) as response:
-            body = response.read()
-            self.assertEqual(response.status, 200)
-            self.assertIn(b"Sentinel", body)
-            self.assertEqual(response.headers["X-Frame-Options"], "DENY")
-            self.assertEqual(response.headers["Cache-Control"], "no-store")
+    def test_dedicated_pages_and_security_headers(self):
+        expected = {
+            "/camera": b"Live camera",
+            "/recordings": b"Recordings",
+            "/settings": b"Settings",
+            "/system": b"System",
+        }
+        for path, heading in expected.items():
+            with self.subTest(path=path):
+                with urlopen(self.request(path), timeout=2) as response:
+                    body = response.read()
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(heading, body)
+                    self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+                    self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_versioned_frontend_script_is_protected_and_cacheable(self):
+        with urlopen(self.request("/app.js"), timeout=2) as response:
+            self.assertIn(b"void initialize()", response.read())
+            self.assertEqual(response.headers["Cache-Control"], "private, max-age=3600")
+
+    def test_text_assets_support_gzip(self):
+        request = self.request("/camera", headers={"Accept-Encoding": "gzip"})
+        with urlopen(request, timeout=2) as response:
+            self.assertEqual(response.headers["Content-Encoding"], "gzip")
+            self.assertEqual(response.headers["Vary"], "Accept-Encoding")
+            self.assertGreater(len(response.read()), 0)
 
     def test_login_cookie_is_hardened(self):
         request = Request(
@@ -231,8 +256,11 @@ class HTTPTests(unittest.TestCase):
         self.stream._publish(b"new-frame")
         with urlopen(self.request("/api/status"), timeout=2) as response:
             payload = json.load(response)
-            self.assertTrue(payload["online"])
-            self.assertEqual(payload["resolution"], "1280 × 720")
+        self.assertTrue(payload["online"])
+        self.assertEqual(payload["resolution"], "1280 × 720")
+        self.assertEqual(payload["capture_resolution"], "1280 × 720")
+        self.assertEqual(payload["live_resolution"], "960 × 540")
+        self.assertEqual(payload["capture_quality"], 75)
 
     def test_system_payload(self):
         with urlopen(self.request("/api/system"), timeout=2) as response:

@@ -43,6 +43,33 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('camera_host="127.0.0.1"', service_installer)
         self.assertIn("https://tailscale.com/install.sh", service_installer)
 
+    def test_tailscale_failure_falls_back_without_stopping_install(self):
+        service_installer = (ROOT / "install-service.sh").read_text()
+
+        camera_start = service_installer.index(
+            'sudo systemctl restart raspi-security-camera.service'
+        )
+        tailscale_start = service_installer.index(
+            'sudo systemctl enable --now tailscaled.service'
+        )
+
+        self.assertLess(camera_start, tailscale_start)
+        self.assertIn(
+            'tailscale_error="The Tailscale service could not be started."',
+            service_installer,
+        )
+        self.assertIn('camera_host="0.0.0.0"', service_installer)
+        self.assertIn(
+            'The security camera installation will continue with local-network access.',
+            service_installer,
+        )
+        self.assertNotIn(
+            'die "The Tailscale service could not be started."', service_installer
+        )
+        self.assertNotIn(
+            'die "Tailscale Serve could not be configured.', service_installer
+        )
+
     def test_installer_supports_trixie_polkit_package_split(self):
         service_installer = (ROOT / "install-service.sh").read_text()
 

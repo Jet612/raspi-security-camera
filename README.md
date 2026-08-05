@@ -24,6 +24,10 @@ starts with the beginner setup and keeps developer information near the end.
 
 - Require a login for the dashboard, live feed, snapshots, APIs, health status,
   recording playback, and downloads
+- Use dedicated Camera, Recordings, Settings, and System pages so each screen
+  loads only the data it needs
+- Send a lower-resolution, lower-bandwidth live preview while preserving the
+  high-quality source for snapshots, detection, and recordings
 - Turn the camera on and off without stopping the dashboard service
 - Start and stop recordings, replay them in the browser, download, or delete them
 - Turn AI object detection and motion detection on or off independently
@@ -85,6 +89,11 @@ official installer. It may print a sign-in link; open that link on any device
 and approve the Pi. Your viewing phone or computer also needs Tailscale and must
 be signed into the same private Tailscale network.
 
+Tailscale is optional. If its package, service, sign-in, or Serve setup fails,
+the camera installation still finishes and prints a local-network address. Fix
+Tailscale separately, then rerun the installer with `--tailscale-serve` to add
+private remote access.
+
 The installer may ask for two passwords:
 
 - **Raspberry Pi password:** required by `sudo` while installing system
@@ -122,20 +131,26 @@ Sign in with username `admin` and the dashboard password created during setup.
 
 ### Live camera
 
-- **Camera switch:** turns video capture on or off without shutting down the
-  dashboard. Turning it off also safely finishes an active recording.
 - **Start recording:** begins saving video on the Pi. The button changes to
   **Stop recording** while recording.
-- **Snapshot:** opens the newest camera image in a new browser tab. Save it with
-  the browser's normal image-save option.
+- **High-quality snapshot:** opens the newest full-quality source image in a new
+  browser tab. Save it with the browser's normal image-save option.
 - **Fullscreen button:** expands the live image. Use Escape or the button again
   to leave fullscreen.
+- **AI boxes** and **Motion:** independently show or hide those overlays for the
+  current browser. Hiding an overlay does not turn detection off.
 
 The connection indicator shows whether the camera is online, starting, turned
 off, or unavailable. If the camera is unavailable, the dashboard remains open
-and keeps trying to reconnect.
+and keeps trying to reconnect. The live preview is intentionally lighter than
+the capture source; recordings and snapshots do not use the preview copy.
 
-### Detection controls
+### Settings
+
+Open the **Settings** page for all camera and detection controls.
+
+- **Camera capture:** turns video capture on or off without shutting down the
+  dashboard. Turning it off also safely finishes an active recording.
 
 - **AI detection:** looks for security-relevant objects. Without an optional AI
   model, the CPU fallback detects people. A compatible YOLO model adds vehicles
@@ -155,19 +170,19 @@ people; motion detection reacts to any visible image change.
 
 ### Recordings
 
-Open the **Recordings** section to see saved clips.
+Open the **Recordings** page to see saved clips.
 
 - **Play** watches a completed recording in the dashboard.
 - **Download** saves the raw `.mjpeg` file to the viewing device. VLC can play
   this format directly.
 - **×** permanently deletes that recording from the Pi.
 
-Recordings use the Pi's microSD card. Check the Storage value in the Device
-section occasionally and delete or download old recordings before storage fills.
+Recordings use the Pi's microSD card. Check the Storage value on the **System**
+page occasionally and delete or download old recordings before storage fills.
 
 ### Device information and reboot
 
-The **Device** section shows processor use, temperature, memory, storage,
+The **System** page shows processor use, temperature, memory, storage,
 hostname, operating system, kernel, and uptime. **Reboot** asks for confirmation
 and then restarts the entire Pi. Live video is unavailable until startup finishes.
 
@@ -279,6 +294,21 @@ journalctl -u raspi-security-camera -n 50 --no-pager
 
 Rerunning the one-line installer safely repairs the service files and keeps
 recordings and settings.
+
+### Tailscale fails during installation
+
+The camera should still finish installing and print a local address such as
+`https://192.168.1.50:8080`. Use that address from the same local network while
+you diagnose Tailscale:
+
+```bash
+sudo systemctl status tailscaled --no-pager
+journalctl -u tailscaled -n 50 --no-pager
+```
+
+After `tailscaled` is running normally, rerun the installer and select Tailscale
+again. The installer then changes the camera from direct LAN access to the
+private Tailscale Serve address.
 
 ### I forgot the dashboard password
 
@@ -512,10 +542,14 @@ hailortcli fw-control identify
 | `CAMERA_TLS_KEY` | unset | PEM TLS private key for direct HTTPS |
 | `CAMERA_SETTINGS_FILE` | `./state/device-settings.json` | Persisted dashboard control state |
 | `CAMERA_TRUST_PROXY_HTTPS` | `false` | Use HTTPS-only cookies behind a loopback HTTPS proxy |
-| `CAMERA_WIDTH` | `1920` | Stream width |
-| `CAMERA_HEIGHT` | `1080` | Stream height |
+| `CAMERA_WIDTH` | `1920` | High-quality capture, snapshot, and recording width |
+| `CAMERA_HEIGHT` | `1080` | High-quality capture, snapshot, and recording height |
 | `CAMERA_FPS` | `20` | Capture and recording playback frame rate |
-| `CAMERA_QUALITY` | `75` | JPEG quality from 1-100 |
+| `CAMERA_QUALITY` | `85` | Snapshot and recording JPEG quality from 1-100 |
+| `CAMERA_LIVE_WIDTH` | `960` | Maximum live preview width |
+| `CAMERA_LIVE_HEIGHT` | `540` | Maximum live preview height |
+| `CAMERA_LIVE_FPS` | `10` | Maximum live preview frames per second |
+| `CAMERA_LIVE_QUALITY` | `55` | Live preview JPEG quality from 20-90 |
 | `CAMERA_SENSOR_MODE` | `2304:1296:10:P` | Camera Module 3 full-field sensor mode |
 | `CAMERA_AF_MODE` | `continuous` | Camera autofocus mode |
 | `MOTION_ENABLED` | `true` | Initial motion detection state |
@@ -554,10 +588,12 @@ custom pipeline. It must continuously emit JPEG images to stdout.
 
 ## Recordings
 
-Recordings use raw MJPEG so they can be written directly from the existing
-camera stream without a second camera process or FFmpeg. The dashboard replays
-them at `CAMERA_FPS`. Downloads use the `.mjpeg` format; VLC and FFmpeg can open
-or convert it. Turning the camera off safely stops and saves an active recording.
+Recordings use raw MJPEG so the high-quality source frames can be written
+directly without a second camera process or FFmpeg. The lower-quality live
+preview is generated separately and is never written to a recording. The
+dashboard replays recordings at `CAMERA_FPS`. Downloads use the `.mjpeg` format;
+VLC and FFmpeg can open or convert it. Turning the camera off safely stops and
+saves an active recording.
 The installed systemd service grants write access to the default `./recordings`
 directory; a custom `RECORDINGS_DIR` also needs a matching `ReadWritePaths` entry
 in the service unit.

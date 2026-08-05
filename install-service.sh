@@ -6,6 +6,10 @@ info() {
   printf '\n==> %s\n' "$1"
 }
 
+warn() {
+  printf '\nWARNING: %s\n' "$1" >&2
+}
+
 tailscale_serve_url() {
   sudo tailscale serve status 2>/dev/null | \
     sed -n '/^[[:space:]]*https:\/\// { s/^[[:space:]]*//; p; }' | \
@@ -138,6 +142,19 @@ temporary_polkit="$(mktemp)"
 temporary_tailscale_installer="$(mktemp)"
 trap 'rm -f "$temporary_unit" "$temporary_update_unit" "$temporary_password" "$temporary_certificate" "$temporary_key" "$temporary_environment" "$temporary_polkit" "$temporary_tailscale_installer"' EXIT
 
+write_environment() {
+  printf '%s\n' \
+    "CAMERA_HOST=$camera_host" \
+    "CAMERA_PASSWORD_HASH=" \
+    "CAMERA_PASSWORD_FILE=$password_file" \
+    "CAMERA_TLS_CERT=$certificate_file" \
+    "CAMERA_TLS_KEY=$private_key_file" \
+    "CAMERA_SETTINGS_FILE=$settings_file" \
+    "CAMERA_TRUST_PROXY_HTTPS=false" \
+    > "$temporary_environment"
+  sudo install -m 0640 -o root -g "$service_group" "$temporary_environment" "$environment_file"
+}
+
 for command in git openssl python3 sed systemctl busctl; do
   if ! command -v "$command" >/dev/null 2>&1; then
     die "$command is required but was not found. Re-run without --skip-dependencies."
@@ -167,34 +184,7 @@ elif [[ "$tailscale_mode" == "ask" && -r /dev/tty ]]; then
 fi
 
 tailscale_url=""
-if [[ "$configure_tailscale" == true ]]; then
-  if ! command -v tailscale >/dev/null 2>&1; then
-    if [[ "$install_dependencies" != true ]]; then
-      die "Tailscale is not installed. Install it first or re-run without --skip-dependencies."
-    fi
-    command -v curl >/dev/null 2>&1 || \
-      die "curl is required to install Tailscale. Re-run without --skip-dependencies."
-    info "Installing Tailscale from its official installer"
-    curl -fsSL --proto '=https' --tlsv1.2 \
-      -o "$temporary_tailscale_installer" https://tailscale.com/install.sh || \
-      die "Could not download the official Tailscale installer."
-    sudo sh "$temporary_tailscale_installer" || die "Tailscale could not be installed."
-  fi
-
-  command -v tailscale >/dev/null 2>&1 || die "Tailscale was installed but its command was not found."
-  sudo systemctl enable --now tailscaled || die "The Tailscale service could not be started."
-  if ! sudo tailscale status >/dev/null 2>&1; then
-    info "Connecting this Pi to Tailscale"
-    echo "Tailscale may print a sign-in link. Open it on any device and approve this Pi."
-    sudo tailscale up || die "Tailscale sign-in did not finish. Run the installer again when ready."
-  fi
-
-  info "Configuring private HTTPS access with Tailscale Serve"
-  sudo tailscale serve --bg https+insecure://127.0.0.1:8080 || \
-    die "Tailscale Serve could not be configured. Follow the message above, then run the installer again."
-  camera_host="127.0.0.1"
-  tailscale_url="$(tailscale_serve_url || true)"
-fi
+tailscale_error=""
 
 for device_group in video render; do
   if getent group "$device_group" >/dev/null 2>&1 && \
@@ -258,16 +248,7 @@ else
   sudo chmod 0640 "$private_key_file"
 fi
 
-printf '%s\n' \
-  "CAMERA_HOST=$camera_host" \
-  "CAMERA_PASSWORD_HASH=" \
-  "CAMERA_PASSWORD_FILE=$password_file" \
-  "CAMERA_TLS_CERT=$certificate_file" \
-  "CAMERA_TLS_KEY=$private_key_file" \
-  "CAMERA_SETTINGS_FILE=$settings_file" \
-  "CAMERA_TRUST_PROXY_HTTPS=false" \
-  > "$temporary_environment"
-sudo install -m 0640 -o root -g "$service_group" "$temporary_environment" "$environment_file"
+write_environment
 
 sed \
   -e "s|__SERVICE_USER__|$service_user|g" \
@@ -297,6 +278,77 @@ if ! sudo systemctl is-active --quiet raspi-security-camera.service; then
   echo "The service did not start. Here are its latest messages:"
   sudo journalctl -u raspi-security-camera.service -n 20 --no-pager || true
   die "Fix the error above, then run this installer again."
+fi
+
+# The dashboard is deliberately installed and checked before optional remote
+# access. A Tailscale package, daemon, sign-in, or Serve failure must not leave a
+# fresh camera installation unfinished or make an existing dashboard unreachable.
+if [[ "$configure_tailscale" == true ]]; then
+  installed_camera_host="$camera_host"
+
+  if ! command -v tailscale >/dev/null 2>&1; then
+    if [[ "$install_dependencies" != true ]]; then
+      tailscale_error="Tailscale is not installed and dependency installation was skipped."
+    elif ! command -v curl >/dev/null 2>&1; then
+      tailscale_error="curl is unavailable, so the Tailscale installer could not be downloaded."
+    else
+      info "Installing Tailscale from its official installer"
+      if ! curl -fsSL --proto '=https' --tlsv1.2 \
+          -o "$temporary_tailscale_installer" https://tailscale.com/install.sh; then
+        tailscale_error="The official Tailscale installer could not be downloaded."
+      elif ! sudo sh "$temporary_tailscale_installer"; then
+        tailscale_error="The Tailscale package installer failed."
+      fi
+    fi
+  fi
+
+  if [[ -z "$tailscale_error" ]] && ! command -v tailscale >/dev/null 2>&1; then
+    tailscale_error="Tailscale was installed, but its command was not found."
+  fi
+
+  if [[ -z "$tailscale_error" ]]; then
+    if ! sudo systemctl enable --now tailscaled.service; then
+      tailscale_error="The Tailscale service could not be started."
+    elif ! sudo systemctl is-active --quiet tailscaled.service; then
+      tailscale_error="The Tailscale service stopped immediately after it started."
+    fi
+  fi
+
+  if [[ -z "$tailscale_error" ]] && ! sudo tailscale status >/dev/null 2>&1; then
+    info "Connecting this Pi to Tailscale"
+    echo "Tailscale may print a sign-in link. Open it on any device and approve this Pi."
+    if ! sudo tailscale up; then
+      tailscale_error="Tailscale sign-in did not finish."
+    fi
+  fi
+
+  if [[ -z "$tailscale_error" ]]; then
+    info "Configuring private HTTPS access with Tailscale Serve"
+    if sudo tailscale serve --bg https+insecure://127.0.0.1:8080; then
+      camera_host="127.0.0.1"
+      tailscale_url="$(tailscale_serve_url || true)"
+    else
+      tailscale_error="Tailscale Serve could not be configured."
+    fi
+  fi
+
+  if [[ -n "$tailscale_error" ]]; then
+    camera_host="0.0.0.0"
+    warn "$tailscale_error"
+    echo "The security camera installation will continue with local-network access."
+    echo "After fixing Tailscale, rerun this installer with --tailscale-serve."
+  fi
+
+  if [[ "$camera_host" != "$installed_camera_host" ]]; then
+    write_environment
+    sudo systemctl restart raspi-security-camera.service
+    if ! sudo systemctl is-active --quiet raspi-security-camera.service; then
+      echo
+      echo "The service did not restart after its access address changed."
+      sudo journalctl -u raspi-security-camera.service -n 20 --no-pager || true
+      die "Fix the error above, then run this installer again."
+    fi
+  fi
 fi
 
 echo

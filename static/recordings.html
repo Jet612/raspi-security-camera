@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0a0c10">
+    <meta name="color-scheme" content="dark">
+    <title>Recordings · Sentinel</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css?v=7">
+    <script src="/app.js?v=7" defer></script>
+  </head>
+  <body data-page="recordings">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/camera" aria-label="Sentinel live camera"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12"></circle><circle cx="16" cy="16" r="5"></circle><path d="M16 4v7M16 21v7M4 16h7M21 16h7"></path></svg></span><span><strong>Sentinel</strong><small>Camera 01</small></span></a>
+        <nav aria-label="Main navigation">
+          <a class="nav-item" href="/camera"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="15" height="12" rx="2"></rect><path d="m18 10 3-2v8l-3-2"></path></svg><span>Camera</span></a>
+          <a class="nav-item active" href="/recordings"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m10 9 5 3-5 3Z"></path></svg><span>Recordings</span></a>
+          <a class="nav-item" href="/settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path></svg><span>Settings</span></a>
+          <a class="nav-item" href="/system"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M9 7h6M9 11h6M9 15h3"></path><circle cx="16" cy="16" r="1"></circle></svg><span>System</span></a>
+        </nav>
+        <div class="sidebar-footer"><div class="device-state"><span id="sidebar-device-dot" class="device-dot"></span><span><small>Raspberry Pi</small><strong id="sidebar-device-state">Connecting</strong></span></div><button id="logout-button" class="icon-button" type="button" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3"></path><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"></path></svg></button></div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar"><div><p class="eyebrow">Local storage</p><h1>Recordings</h1><p>High-quality clips stay on this Raspberry Pi.</p></div><div class="topbar-actions"><div id="connection-status" class="status status-waiting" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-label">Connecting</span></div><button id="refresh-recordings" class="button button-secondary" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5"></path><path d="M6.1 9a7 7 0 0 1 11.5-2.6L20 9M4 15l2.4 2.6A7 7 0 0 0 17.9 15"></path></svg>Refresh</button></div></header>
+        <main class="page recordings-page">
+          <div id="recordings-list" class="recordings-list" aria-live="polite"><div class="recordings-empty"><span class="loader"></span><strong>Loading recordings</strong></div></div>
+        </main>
+      </div>
+    </div>
+    <dialog id="playback-dialog" class="playback-dialog"><div class="dialog-heading"><div><span class="panel-kicker">High-quality recording</span><h2 id="playback-title">Recording</h2></div><button id="close-playback" class="close-button" type="button" aria-label="Close playback">×</button></div><div class="playback-stage"><img id="playback-stream" alt="Recorded camera footage"></div><p>Playback uses the recording’s original capture quality.</p></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

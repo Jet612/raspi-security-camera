@@ -64,7 +64,9 @@ class DetectionFilterTests(unittest.TestCase):
             {"label": "dog", "category": "animal", "confidence": 0.8},
         ]
         engine._ai_backend_name = "cpu"
-        engine._analyse_objects(image=None, cv2=None, now=time.monotonic())
+        now = time.monotonic()
+        engine._next_hailo_probe = now + 300
+        engine._analyse_objects(image=None, cv2=None, now=now)
         self.assertEqual(
             [item["label"] for item in engine.status()["detections"]], ["person"]
         )
