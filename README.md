@@ -12,6 +12,7 @@ starts with the beginner setup and keeps developer information near the end.
 
 - [Before you begin](#before-you-begin)
 - [Quick start](#quick-start)
+- [Private remote access with Tailscale](#tailscale-serve)
 - [Using the dashboard](#using-the-dashboard)
 - [Software updates and forks](#software-updates)
 - [Changing the dashboard password](#changing-the-dashboard-password)
@@ -69,7 +70,20 @@ curl -fsSL https://raw.githubusercontent.com/Jet612/raspi-security-camera/main/i
 
 The installer downloads the app, installs the camera and detection software,
 and configures it to start whenever the Pi boots. The first installation can
-take several minutes.
+take several minutes. It also asks whether you want optional private remote
+access through Tailscale Serve.
+
+To select Tailscale Serve automatically instead of waiting for that question,
+use this version of the install command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jet612/raspi-security-camera/main/install.sh | bash -s -- --tailscale-serve
+```
+
+If Tailscale is not on the Pi yet, the installer downloads it from Tailscale's
+official installer. It may print a sign-in link; open that link on any device
+and approve the Pi. Your viewing phone or computer also needs Tailscale and must
+be signed into the same private Tailscale network.
 
 The installer may ask for two passwords:
 
@@ -80,21 +94,23 @@ The installer may ask for two passwords:
 
 ### 3. Open the dashboard
 
-When installation finishes, Terminal prints a line similar to:
+When installation finishes, Terminal prints one of these addresses:
 
 ```text
 Open:        https://192.168.1.50:8080
+Open:        https://camera-name.your-tailnet.ts.net
 Username:    admin
 ```
 
-Open that address on a phone, tablet, or computer connected to the same local
-network. Use the exact `https://` address, including `:8080`.
+Open the address that your installer printed. The numeric address with `:8080`
+works on the same local network. A `ts.net` address works from devices in your
+Tailscale network and does not use port `8080` in the browser address.
 
-The first visit normally shows a browser privacy warning because the Pi creates
-its own self-signed certificate. Compare the SHA-256 fingerprint shown by the
-browser with the fingerprint printed by the installer. If they match, use the
-browser's **Advanced** or **Continue** option. This warning does not mean the
-dashboard password or video is being sent without encryption.
+The numeric address normally shows a browser privacy warning because the Pi
+creates its own self-signed certificate. Compare the SHA-256 fingerprint shown
+by the browser with the fingerprint printed by the installer. If they match,
+use the browser's **Advanced** or **Continue** option. The Tailscale address uses
+a browser-trusted certificate and should not show this warning.
 
 Sign in with username `admin` and the dashboard password created during setup.
 
@@ -196,6 +212,13 @@ That repository becomes `origin`, so future dashboard and `update.sh` checks
 continue to use the fork. A maintainer can intentionally configure a different
 tracking remote with Git; the updater follows that configured upstream.
 
+To select Tailscale Serve automatically while installing a fork, add the same
+installer option:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPOSITORY/main/install.sh | RASPI_CAMERA_REPOSITORY=https://github.com/OWNER/REPOSITORY.git bash -s -- --tailscale-serve
+```
+
 ## Changing the dashboard password
 
 Run the same one-line install command again. When asked whether to replace the
@@ -296,6 +319,14 @@ sudo rm -f /etc/polkit-1/rules.d/50-raspi-security-camera-reboot.rules
 sudo systemctl daemon-reload
 ```
 
+If this installer configured Tailscale Serve and you no longer want the camera
+address shared with your tailnet, turn that proxy off too. This does not uninstall
+Tailscale or remove the Pi from your tailnet:
+
+```bash
+sudo tailscale serve off
+```
+
 The app folder still contains the recordings. To remove the application files
 and recordings too, delete the `raspi-security-camera` folder from your home
 directory. Protected credentials and saved control settings can be removed with:
@@ -316,10 +347,12 @@ cd raspi-security-camera
 ./install-service.sh
 ```
 
-The local installer installs Git, `rpicam-apps`, OpenCV, NumPy, OpenSSL, and polkit
-through Raspberry Pi OS. Pass `--skip-dependencies` only when those packages are
-already managed separately. If the Pi has a Hailo AI HAT, install its optional
-runtime before or after installing the app:
+The local installer installs Git, curl, `rpicam-apps`, OpenCV, NumPy, OpenSSL,
+and polkit through Raspberry Pi OS. Pass `--tailscale-serve` to select private
+remote access without a question, or `--no-tailscale-serve` to skip the question.
+Pass `--skip-dependencies` only when the required packages are already managed
+separately. If the Pi has a Hailo AI HAT, install its optional runtime before or
+after installing the app:
 
 ```bash
 sudo apt install hailo-all
@@ -349,11 +382,29 @@ preserves an existing loopback-only listener used by a reverse proxy.
 
 ### Tailscale Serve
 
-To use a browser-trusted, tailnet-only URL instead of the generated self-signed
-LAN certificate, proxy the local HTTPS service with Tailscale Serve:
+Tailscale Serve provides a browser-trusted address that is available only inside
+your private tailnet. The easy installer asks whether to set it up. To enable it
+later—or repair its configuration—run:
 
 ```bash
-tailscale serve --bg https+insecure://127.0.0.1:8080
+cd ~/raspi-security-camera
+./install-service.sh --tailscale-serve
+```
+
+The installer installs Tailscale when necessary, guides you through signing in,
+configures a persistent Serve proxy, and limits the camera backend to localhost.
+After enabling it, use the printed Tailscale address instead of the Pi's numeric
+LAN address.
+
+Tailscale documents its supported Linux installer and Serve behavior in the
+[Linux installation guide](https://tailscale.com/docs/install/linux) and
+[Serve command reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
+
+For a Tailscale client that you already manage yourself, the equivalent manual
+configuration is:
+
+```bash
+sudo tailscale serve --bg https+insecure://127.0.0.1:8080
 sudo sed -i 's/^CAMERA_HOST=.*/CAMERA_HOST=127.0.0.1/' /etc/raspi-security-camera/environment
 sudo systemctl restart raspi-security-camera
 ```
@@ -362,6 +413,14 @@ Use the `https://<device>.<tailnet>.ts.net` URL printed by Tailscale without
 port `8080`. Loopback-only mode prevents bypassing Serve through either the LAN
 or Tailscale IP address; tailnet access controls and the dashboard password both
 remain in effect.
+
+To stop using Serve and restore direct access from the local network:
+
+```bash
+sudo tailscale serve off
+sudo sed -i 's/^CAMERA_HOST=.*/CAMERA_HOST=0.0.0.0/' /etc/raspi-security-camera/environment
+sudo systemctl restart raspi-security-camera
+```
 
 ## Manual local run
 

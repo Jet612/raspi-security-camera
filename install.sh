@@ -56,4 +56,4 @@ else
 fi
 
 chmod +x "$install_dir/install-service.sh" "$install_dir/update.sh"
-exec "$install_dir/install-service.sh"
+exec "$install_dir/install-service.sh" "$@"

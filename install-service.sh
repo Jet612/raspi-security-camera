@@ -6,6 +6,12 @@ info() {
   printf '\n==> %s\n' "$1"
 }
 
+tailscale_serve_url() {
+  sudo tailscale serve status 2>/dev/null | \
+    sed -n '/^[[:space:]]*https:\/\// { s/^[[:space:]]*//; p; }' | \
+    sed -n '1p'
+}
+
 die() {
   printf '\nInstallation stopped: %s\n' "$1" >&2
   exit 1
@@ -19,18 +25,28 @@ Usage: ./install-service.sh [options]
 
 Options:
   --skip-dependencies  Do not install Raspberry Pi OS packages
+  --tailscale-serve    Install/configure private HTTPS access with Tailscale Serve
+  --no-tailscale-serve Skip the Tailscale question and leave its configuration alone
   --help               Show this help
 
 The installer can safely be run again to repair the service or change its
-dashboard password. It does not delete recordings or saved settings.
+dashboard password. Without a Tailscale option, it asks whether to configure
+Tailscale Serve. It does not delete recordings or saved settings.
 EOF
 }
 
 install_dependencies=true
+tailscale_mode="ask"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-dependencies)
       install_dependencies=false
+      ;;
+    --tailscale-serve)
+      tailscale_mode="enable"
+      ;;
+    --no-tailscale-serve)
+      tailscale_mode="skip"
       ;;
     --help|-h)
       show_help
@@ -74,6 +90,7 @@ if [[ "$install_dependencies" == true ]]; then
   sudo apt-get install -y \
     git \
     ca-certificates \
+    curl \
     rpicam-apps \
     python3-opencv \
     python3-numpy \
@@ -114,7 +131,8 @@ temporary_certificate="$(mktemp)"
 temporary_key="$(mktemp)"
 temporary_environment="$(mktemp)"
 temporary_polkit="$(mktemp)"
-trap 'rm -f "$temporary_unit" "$temporary_update_unit" "$temporary_password" "$temporary_certificate" "$temporary_key" "$temporary_environment" "$temporary_polkit"' EXIT
+temporary_tailscale_installer="$(mktemp)"
+trap 'rm -f "$temporary_unit" "$temporary_update_unit" "$temporary_password" "$temporary_certificate" "$temporary_key" "$temporary_environment" "$temporary_polkit" "$temporary_tailscale_installer"' EXIT
 
 for command in git openssl python3 sed systemctl busctl; do
   if ! command -v "$command" >/dev/null 2>&1; then
@@ -128,6 +146,50 @@ fi
 
 if ! python3 -c 'import cv2; import numpy' >/dev/null 2>&1; then
   die "Python camera detection libraries could not be loaded. Re-run without --skip-dependencies."
+fi
+
+configure_tailscale=false
+if [[ "$tailscale_mode" == "enable" ]]; then
+  configure_tailscale=true
+elif [[ "$tailscale_mode" == "ask" && -r /dev/tty ]]; then
+  echo
+  echo "Optional: Tailscale Serve gives this camera a private HTTPS address that"
+  echo "works from your other Tailscale devices, even away from home."
+  echo "If enabled, use the Tailscale address instead of the Pi's local IP address."
+  read -r -p "Set up private remote access with Tailscale Serve? [y/N] " response </dev/tty || true
+  if [[ "$response" =~ ^[yY]$ ]]; then
+    configure_tailscale=true
+  fi
+fi
+
+tailscale_url=""
+if [[ "$configure_tailscale" == true ]]; then
+  if ! command -v tailscale >/dev/null 2>&1; then
+    if [[ "$install_dependencies" != true ]]; then
+      die "Tailscale is not installed. Install it first or re-run without --skip-dependencies."
+    fi
+    command -v curl >/dev/null 2>&1 || \
+      die "curl is required to install Tailscale. Re-run without --skip-dependencies."
+    info "Installing Tailscale from its official installer"
+    curl -fsSL --proto '=https' --tlsv1.2 \
+      -o "$temporary_tailscale_installer" https://tailscale.com/install.sh || \
+      die "Could not download the official Tailscale installer."
+    sudo sh "$temporary_tailscale_installer" || die "Tailscale could not be installed."
+  fi
+
+  command -v tailscale >/dev/null 2>&1 || die "Tailscale was installed but its command was not found."
+  sudo systemctl enable --now tailscaled || die "The Tailscale service could not be started."
+  if ! sudo tailscale status >/dev/null 2>&1; then
+    info "Connecting this Pi to Tailscale"
+    echo "Tailscale may print a sign-in link. Open it on any device and approve this Pi."
+    sudo tailscale up || die "Tailscale sign-in did not finish. Run the installer again when ready."
+  fi
+
+  info "Configuring private HTTPS access with Tailscale Serve"
+  sudo tailscale serve --bg https+insecure://127.0.0.1:8080 || \
+    die "Tailscale Serve could not be configured. Follow the message above, then run the installer again."
+  camera_host="127.0.0.1"
+  tailscale_url="$(tailscale_serve_url || true)"
 fi
 
 for device_group in video render; do
@@ -236,9 +298,9 @@ fi
 echo
 echo "Security camera installed successfully."
 if [[ "$camera_host" == "127.0.0.1" ]]; then
-  proxy_url=""
-  if command -v tailscale >/dev/null 2>&1; then
-    proxy_url="$(tailscale serve status 2>/dev/null | sed -n '1p' || true)"
+  proxy_url="$tailscale_url"
+  if [[ -z "$proxy_url" ]] && command -v tailscale >/dev/null 2>&1; then
+    proxy_url="$(tailscale_serve_url || true)"
   fi
   if [[ "$proxy_url" == https://* ]]; then
     echo "Open:        $proxy_url"

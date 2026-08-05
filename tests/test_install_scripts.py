@@ -28,6 +28,20 @@ class InstallScriptTests(unittest.TestCase):
         )
         self.assertIn("Usage: ./install-service.sh", result.stdout)
         self.assertIn("--skip-dependencies", result.stdout)
+        self.assertIn("--tailscale-serve", result.stdout)
+        self.assertIn("--no-tailscale-serve", result.stdout)
+
+    def test_easy_installer_forwards_tailscale_option(self):
+        bootstrap = (ROOT / "install.sh").read_text()
+        service_installer = (ROOT / "install-service.sh").read_text()
+
+        self.assertIn('exec "$install_dir/install-service.sh" "$@"', bootstrap)
+        self.assertIn(
+            "sudo tailscale serve --bg https+insecure://127.0.0.1:8080",
+            service_installer,
+        )
+        self.assertIn('camera_host="127.0.0.1"', service_installer)
+        self.assertIn("https://tailscale.com/install.sh", service_installer)
 
     def test_update_help_is_safe_off_device(self):
         result = subprocess.run(
