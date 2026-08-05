@@ -26,10 +26,36 @@ class NoRedirect(HTTPRedirectHandler):
 class FakeSystemController:
     def __init__(self):
         self.reboot_requests = 0
+        self.update_requests = 0
 
     def schedule_reboot(self):
         self.reboot_requests += 1
         return True
+
+    def schedule_update(self):
+        self.update_requests += 1
+
+
+class FakeSoftwareUpdater:
+    def __init__(self):
+        self.invalidations = 0
+        self.payload = {
+            "supported": True,
+            "available": True,
+            "can_update": True,
+            "state": "available",
+            "message": "A software update is available.",
+            "repository": "github.com/example/camera-fork",
+            "branch": "main",
+            "current_version": "111111111111",
+            "latest_version": "222222222222",
+        }
+
+    def status(self, *, force=False):
+        return dict(self.payload)
+
+    def invalidate(self):
+        self.invalidations += 1
 
 
 class HTTPTests(unittest.TestCase):
@@ -63,11 +89,13 @@ class HTTPTests(unittest.TestCase):
         )
         cls.authenticator = Authenticator(auth_config)
         cls.system_controller = FakeSystemController()
+        cls.software_updater = FakeSoftwareUpdater()
         cls.server = CameraHTTPServer(
             ("127.0.0.1", 0),
             cls.stream,
             cls.authenticator,
             system_controller=cls.system_controller,
+            software_updater=cls.software_updater,
             settings_store=cls.settings_store,
         )
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -137,6 +165,7 @@ class HTTPTests(unittest.TestCase):
         for path in (
             "/api/status",
             "/api/system",
+            "/api/update",
             "/api/recordings",
             "/stream.mjpg",
             "/snapshot.jpg",
@@ -230,10 +259,20 @@ class HTTPTests(unittest.TestCase):
         self.request_json("/api/camera", {"enabled": True}, "POST")
 
         _, detection = self.request_json(
-            "/api/detection", {"motion_sensitivity": 75}, "POST"
+            "/api/detection",
+            {"motion_sensitivity": 75, "ai_categories": ["person"]},
+            "POST",
         )
         self.assertEqual(detection["motion"]["sensitivity"], 75)
+        self.assertEqual(detection["ai"]["categories"], ["person"])
         self.assertEqual(self.settings_store.current.motion_sensitivity, 75)
+        self.assertEqual(self.settings_store.current.ai_categories, ("person",))
+
+        with self.assertRaises(HTTPError) as raised:
+            self.request_json(
+                "/api/detection", {"ai_categories": []}, "POST"
+            )
+        self.assertEqual(raised.exception.code, 400)
 
     def test_recording_lifecycle(self):
         self.request_json("/api/camera", {"enabled": True}, "POST")
@@ -259,6 +298,24 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertTrue(payload["rebooting"])
         self.assertEqual(self.system_controller.reboot_requests, before + 1)
+
+    def test_update_uses_configured_repository_and_requires_confirmation(self):
+        with urlopen(self.request("/api/update"), timeout=2) as response:
+            payload = json.load(response)
+        self.assertEqual(payload["repository"], "github.com/example/camera-fork")
+
+        with self.assertRaises(HTTPError) as raised:
+            self.request_json("/api/update", {"confirm": "no"}, "POST")
+        self.assertEqual(raised.exception.code, 400)
+
+        before = self.system_controller.update_requests
+        status, payload = self.request_json(
+            "/api/update", {"confirm": "update"}, "POST"
+        )
+        self.assertEqual(status, 202)
+        self.assertTrue(payload["updating"])
+        self.assertEqual(self.system_controller.update_requests, before + 1)
+        self.assertGreater(self.software_updater.invalidations, 0)
 
     def test_logout_invalidates_session(self):
         self.request_json("/api/logout", {}, "POST")

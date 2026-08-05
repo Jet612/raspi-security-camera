@@ -2,19 +2,87 @@
 set -euo pipefail
 umask 077
 
+info() {
+  printf '\n==> %s\n' "$1"
+}
+
+die() {
+  printf '\nInstallation stopped: %s\n' "$1" >&2
+  exit 1
+}
+
+show_help() {
+  cat <<'EOF'
+Install Raspberry Pi Security Camera as a system service.
+
+Usage: ./install-service.sh [options]
+
+Options:
+  --skip-dependencies  Do not install Raspberry Pi OS packages
+  --help               Show this help
+
+The installer can safely be run again to repair the service or change its
+dashboard password. It does not delete recordings or saved settings.
+EOF
+}
+
+install_dependencies=true
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-dependencies)
+      install_dependencies=false
+      ;;
+    --help|-h)
+      show_help
+      exit 0
+      ;;
+    *)
+      die "Unknown option: $1 (try --help)"
+      ;;
+  esac
+  shift
+done
+
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 service_user="${SUDO_USER:-$USER}"
 if [[ "$service_user" == "root" ]]; then
-  echo "Refusing to run the camera service as root. Run this installer from the device user account."
-  exit 1
+  die "Run this command from your normal Raspberry Pi user, not a root shell. Using sudo is okay."
 fi
 if [[ ! "$service_user" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*\$?$ ]]; then
-  echo "Unsupported service username: $service_user"
-  exit 1
+  die "The account name '$service_user' is not supported."
 fi
 service_group="$(id -gn "$service_user")"
 
+if [[ "$(uname -s)" != "Linux" ]]; then
+  die "This installer must be run on a Raspberry Pi using Raspberry Pi OS."
+fi
+if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+  die "systemd is not running. This installer supports Raspberry Pi OS, not Docker or WSL."
+fi
+if ! command -v sudo >/dev/null 2>&1; then
+  die "sudo is required. Install it or run this from the standard Raspberry Pi OS user account."
+fi
+
+info "Checking administrator access"
+sudo -v || die "Your account needs permission to use sudo."
+
+if [[ "$install_dependencies" == true ]]; then
+  command -v apt-get >/dev/null 2>&1 || \
+    die "The apt package manager was not found. Raspberry Pi OS is required."
+  info "Installing camera and detection software (this can take a few minutes)"
+  sudo apt-get update
+  sudo apt-get install -y \
+    git \
+    ca-certificates \
+    rpicam-apps \
+    python3-opencv \
+    python3-numpy \
+    openssl \
+    policykit-1
+fi
+
 unit_template="$project_dir/deploy/raspi-security-camera.service.in"
+update_unit_template="$project_dir/deploy/raspi-security-camera-update.service.in"
 polkit_template="$project_dir/deploy/raspi-security-camera-reboot.rules.in"
 credentials_dir="/etc/raspi-security-camera"
 password_file="$credentials_dir/password-hash"
@@ -22,6 +90,12 @@ certificate_file="$credentials_dir/tls.crt"
 private_key_file="$credentials_dir/tls.key"
 environment_file="$credentials_dir/environment"
 settings_file="/var/lib/raspi-security-camera/device-settings.json"
+
+for required_file in "$unit_template" "$update_unit_template" "$polkit_template" \
+    "$project_dir/update.sh"; do
+  [[ -f "$required_file" ]] || die "The app download is incomplete. Run the easy installer again."
+done
+chmod +x "$project_dir/update.sh"
 
 # Preserve loopback-only mode once a reverse proxy has been configured. A fresh
 # direct-LAN installation still binds on all interfaces with its generated TLS key.
@@ -34,33 +108,48 @@ if sudo test -f "$environment_file"; then
 fi
 
 temporary_unit="$(mktemp)"
+temporary_update_unit="$(mktemp)"
 temporary_password="$(mktemp)"
 temporary_certificate="$(mktemp)"
 temporary_key="$(mktemp)"
 temporary_environment="$(mktemp)"
 temporary_polkit="$(mktemp)"
-trap 'rm -f "$temporary_unit" "$temporary_password" "$temporary_certificate" "$temporary_key" "$temporary_environment" "$temporary_polkit"' EXIT
+trap 'rm -f "$temporary_unit" "$temporary_update_unit" "$temporary_password" "$temporary_certificate" "$temporary_key" "$temporary_environment" "$temporary_polkit"' EXIT
 
-for command in openssl python3 sed systemctl busctl; do
+for command in git openssl python3 sed systemctl busctl; do
   if ! command -v "$command" >/dev/null 2>&1; then
-    echo "$command is required but was not found."
-    exit 1
+    die "$command is required but was not found. Re-run without --skip-dependencies."
   fi
 done
 
 if ! command -v rpicam-vid >/dev/null 2>&1 && ! command -v libcamera-vid >/dev/null 2>&1; then
-  echo "rpicam-vid is missing. Install it first with:"
-  echo "  sudo apt update && sudo apt install rpicam-apps"
-  exit 1
+  die "The Raspberry Pi camera command is missing. Re-run without --skip-dependencies."
 fi
 
+if ! python3 -c 'import cv2; import numpy' >/dev/null 2>&1; then
+  die "Python camera detection libraries could not be loaded. Re-run without --skip-dependencies."
+fi
+
+for device_group in video render; do
+  if getent group "$device_group" >/dev/null 2>&1 && \
+      ! id -nG "$service_user" | tr ' ' '\n' | grep -Fxq "$device_group"; then
+    info "Giving $service_user access to camera hardware"
+    sudo usermod -a -G "$device_group" "$service_user"
+  fi
+done
+
+info "Creating the dashboard login and encrypted connection"
 mkdir -p "$project_dir/recordings"
 sudo install -d -m 0750 -o root -g "$service_group" "$credentials_dir"
 
 replace_password=true
 if sudo test -s "$password_file"; then
   replace_password=false
-  read -r -p "A dashboard password already exists. Replace it? [y/N] " response
+  if [[ -r /dev/tty ]]; then
+    read -r -p "A dashboard password already exists. Replace it? [y/N] " response </dev/tty || true
+  else
+    response=""
+  fi
   if [[ "$response" =~ ^[yY]$ ]]; then
     replace_password=true
   fi
@@ -120,17 +209,32 @@ sed \
   -e "s|__PROJECT_DIR__|$project_dir|g" \
   "$unit_template" > "$temporary_unit"
 
+sed \
+  -e "s|__SERVICE_USER__|$service_user|g" \
+  -e "s|__SERVICE_GROUP__|$service_group|g" \
+  -e "s|__PROJECT_DIR__|$project_dir|g" \
+  "$update_unit_template" > "$temporary_update_unit"
+
 sed -e "s|__SERVICE_USER__|$service_user|g" \
   "$polkit_template" > "$temporary_polkit"
 
 sudo install -m 0644 "$temporary_unit" /etc/systemd/system/raspi-security-camera.service
+sudo install -m 0644 "$temporary_update_unit" /etc/systemd/system/raspi-security-camera-update.service
 sudo install -m 0644 "$temporary_polkit" /etc/polkit-1/rules.d/50-raspi-security-camera-reboot.rules
+info "Starting the security camera"
 sudo systemctl daemon-reload
 sudo systemctl enable raspi-security-camera.service
 sudo systemctl restart raspi-security-camera.service
 
+if ! sudo systemctl is-active --quiet raspi-security-camera.service; then
+  echo
+  echo "The service did not start. Here are its latest messages:"
+  sudo journalctl -u raspi-security-camera.service -n 20 --no-pager || true
+  die "Fix the error above, then run this installer again."
+fi
+
 echo
-echo "Security camera service installed and started."
+echo "Security camera installed successfully."
 if [[ "$camera_host" == "127.0.0.1" ]]; then
   proxy_url=""
   if command -v tailscale >/dev/null 2>&1; then

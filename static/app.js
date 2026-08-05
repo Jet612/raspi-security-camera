@@ -23,6 +23,7 @@ const aiValue = $("#ai-value");
 const objectsValue = $("#objects-value");
 const cameraToggle = $("#camera-toggle");
 const aiToggle = $("#ai-toggle");
+const aiCategoryInputs = [...document.querySelectorAll('input[name="ai-category"]')];
 const motionToggle = $("#motion-toggle");
 const motionSensitivity = $("#motion-sensitivity");
 const motionSensitivityValue = $("#motion-sensitivity-value");
@@ -62,6 +63,13 @@ const rebootButton = $("#reboot-button");
 const rebootDialog = $("#reboot-dialog");
 const cancelRebootButton = $("#cancel-reboot");
 const confirmRebootButton = $("#confirm-reboot");
+const updateBanner = $("#update-banner");
+const updateTitle = $("#update-title");
+const updateDetail = $("#update-detail");
+const updateButton = $("#update-button");
+const updateDialog = $("#update-dialog");
+const cancelUpdateButton = $("#cancel-update");
+const confirmUpdateButton = $("#confirm-update");
 
 let streamRetry;
 let toastTimer;
@@ -186,6 +194,10 @@ function updateDetection(detection) {
 
   if (!pendingControls.has("motion")) motionToggle.checked = Boolean(detection.motion?.enabled);
   if (!pendingControls.has("ai")) aiToggle.checked = Boolean(detection.ai?.enabled);
+  if (!pendingControls.has("categories")) {
+    const selectedCategories = new Set(detection.ai?.categories || []);
+    for (const input of aiCategoryInputs) input.checked = selectedCategories.has(input.value);
+  }
   if (!pendingControls.has("sensitivity") && detection.motion?.sensitivity) {
     motionSensitivity.value = detection.motion.sensitivity;
     motionSensitivityValue.value = detection.motion.sensitivity;
@@ -332,6 +344,31 @@ async function setToggle(control, path, payload, key) {
 cameraToggle.addEventListener("change", () => setToggle(cameraToggle, "/api/camera", { enabled: cameraToggle.checked }, "camera"));
 aiToggle.addEventListener("change", () => setToggle(aiToggle, "/api/detection", { ai_enabled: aiToggle.checked }, "ai"));
 motionToggle.addEventListener("change", () => setToggle(motionToggle, "/api/detection", { motion_enabled: motionToggle.checked }, "motion"));
+for (const input of aiCategoryInputs) {
+  input.addEventListener("change", async () => {
+    const selected = aiCategoryInputs.filter((item) => item.checked).map((item) => item.value);
+    if (!selected.length) {
+      input.checked = true;
+      showToast("Choose at least one AI detection category", true);
+      return;
+    }
+    pendingControls.add("categories");
+    for (const item of aiCategoryInputs) item.disabled = true;
+    try {
+      await api("/api/detection", {
+        method: "POST",
+        body: JSON.stringify({ ai_categories: selected }),
+      });
+      showToast(`AI filter: ${selected.map(titleCase).join(", ")}`);
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      pendingControls.delete("categories");
+      for (const item of aiCategoryInputs) item.disabled = false;
+      await updateStatus();
+    }
+  });
+}
 motionSensitivity.addEventListener("input", () => { motionSensitivityValue.value = motionSensitivity.value; });
 motionSensitivity.addEventListener("change", async () => {
   pendingControls.add("sensitivity");
@@ -427,6 +464,50 @@ async function loadSystem() {
   } finally {
     refreshSystemButton.disabled = false;
   }
+}
+
+function renderUpdate(update) {
+  if (!update?.supported || !update.available) {
+    updateBanner.classList.add("hidden");
+    return;
+  }
+  const blocked = !update.can_update;
+  updateBanner.classList.remove("hidden");
+  updateBanner.classList.toggle("blocked", blocked);
+  updateTitle.textContent = blocked ? "Software update needs attention" : "Software update available";
+  const source = update.repository && update.branch ? `${update.repository} · ${update.branch}` : "configured Git repository";
+  updateDetail.textContent = blocked
+    ? update.message
+    : `${source} · ${update.current_version} → ${update.latest_version}`;
+  updateButton.disabled = blocked;
+  updateButton.textContent = blocked ? "Update locally" : "Update now";
+}
+
+async function loadUpdate(refresh = false) {
+  try {
+    const update = await api(`/api/update${refresh ? "?refresh=1" : ""}`);
+    renderUpdate(update);
+    return update;
+  } catch (_) {
+    return null;
+  }
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function monitorUpdate() {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await wait(2000);
+    const update = await loadUpdate(true);
+    if (update?.supported && !update.available) {
+      window.location.reload();
+      return;
+    }
+  }
+  confirmUpdateButton.disabled = false;
+  showToast("The update did not finish. Run ./update.sh on the Pi for details.", true);
 }
 
 function createButton(label, className, handler) {
@@ -563,6 +644,29 @@ confirmRebootButton.addEventListener("click", async () => {
   }
 });
 
+updateButton.addEventListener("click", () => updateDialog.showModal());
+cancelUpdateButton.addEventListener("click", () => updateDialog.close());
+updateDialog.addEventListener("click", (event) => {
+  if (event.target === updateDialog) updateDialog.close();
+});
+confirmUpdateButton.addEventListener("click", async () => {
+  confirmUpdateButton.disabled = true;
+  try {
+    await api("/api/update", { method: "POST", body: JSON.stringify({ confirm: "update" }) });
+    updateDialog.close();
+    updateButton.disabled = true;
+    updateButton.textContent = "Updating…";
+    updateTitle.textContent = "Installing software update";
+    updateDetail.textContent = "The dashboard will reload after the camera service restarts.";
+    showToast("Update started. Recordings and settings will be kept.");
+    void monitorUpdate();
+  } catch (error) {
+    showToast(error.message, true);
+    confirmUpdateButton.disabled = false;
+    await loadUpdate(true);
+  }
+});
+
 logoutButton.addEventListener("click", async () => {
   logoutButton.disabled = true;
   try {
@@ -587,12 +691,13 @@ async function initialize() {
   try {
     const session = await api("/api/session");
     csrfToken = session.csrf_token;
-    await Promise.all([updateStatus(), loadRecordings(), loadSystem()]);
+    await Promise.all([updateStatus(), loadRecordings(), loadSystem(), loadUpdate(true)]);
     updateClock();
     setInterval(updateStatus, 1000);
     setInterval(updateClock, 1000);
     setInterval(loadRecordings, 10000);
     setInterval(loadSystem, 5000);
+    setInterval(() => loadUpdate(true), 15 * 60 * 1000);
   } catch (error) {
     markOffline(error.message);
   }

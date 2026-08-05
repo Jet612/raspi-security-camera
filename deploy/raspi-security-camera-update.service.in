@@ -1,0 +1,37 @@
+[Unit]
+Description=Update Raspberry Pi security camera dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__PROJECT_DIR__/update.sh --no-restart
+ExecStartPost=/usr/bin/systemctl restart raspi-security-camera.service
+TimeoutStartSec=120
+
+# This job alone can update the application checkout. It still runs without
+# root privileges; the root-owned unit fixes both the command and writable path.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+ReadWritePaths=__PROJECT_DIR__

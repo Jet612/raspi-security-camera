@@ -57,6 +57,7 @@ CLASS_CATEGORIES = {
 }
 
 CATEGORY_THRESHOLDS = {"person": 0.45, "animal": 0.42, "vehicle": 0.50}
+AI_CATEGORIES = ("person", "vehicle", "animal")
 DEPENDENCY_RETRY_SECONDS = 30.0
 
 
@@ -292,12 +293,28 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
     return value
 
 
+def _normalize_ai_categories(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = [item.strip().lower() for item in value.split(",") if item.strip()]
+    if not isinstance(value, (list, tuple, set)) or not value:
+        raise ValueError("AI categories must contain at least one category")
+    if any(not isinstance(item, str) for item in value):
+        raise ValueError("AI categories must contain only strings")
+    selected = set(value)
+    if len(selected) != len(value) or not selected.issubset(AI_CATEGORIES):
+        raise ValueError("AI categories may contain person, vehicle, or animal")
+    return tuple(category for category in AI_CATEGORIES if category in selected)
+
+
 class DetectionEngine:
     """Analyses at most the latest frame so inference can never delay video."""
 
     def __init__(self) -> None:
         self.motion_enabled = _env_bool("MOTION_ENABLED", True)
         self.ai_enabled = _env_bool("AI_ENABLED", True)
+        self.ai_categories = _normalize_ai_categories(
+            os.getenv("AI_CATEGORIES", ",".join(AI_CATEGORIES))
+        )
         self.analysis_fps = _env_float("DETECTION_FPS", 5.0, 0.5, 20.0)
         self.motion_threshold = _env_float(
             "MOTION_THRESHOLD", 0.012, 0.001, 0.5
@@ -355,6 +372,7 @@ class DetectionEngine:
         ai: bool | None = None,
         motion: bool | None = None,
         sensitivity: float | None = None,
+        categories: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, object]:
         """Apply dashboard detection settings without restarting the service."""
         with self._condition:
@@ -380,6 +398,13 @@ class DetectionEngine:
                 self.motion_threshold = 0.08 - ((sensitivity - 1) / 99 * 0.077)
                 self._motion_background = None
                 self._motion_warmup = 0
+            if categories is not None:
+                self.ai_categories = _normalize_ai_categories(categories)
+                self._detections = [
+                    item
+                    for item in self._detections
+                    if item.get("category") in self.ai_categories
+                ]
             self._condition.notify_all()
         return self.status()
 
@@ -587,7 +612,11 @@ class DetectionEngine:
             else:
                 detections = self._model.detect(image)
             with self._condition:
-                self._detections = detections
+                self._detections = [
+                    item
+                    for item in detections
+                    if item.get("category") in self.ai_categories
+                ]
                 self._ai_state = "online"
                 self._ai_error = None
         except Exception as exc:
@@ -667,6 +696,7 @@ class DetectionEngine:
                     "backend": self._ai_backend_name,
                     "model": self._ai_model_name,
                     "error": self._ai_error,
+                    "categories": list(self.ai_categories),
                 },
                 "analysis_fps": round(analysis_fps, 1),
                 "detections": detections,

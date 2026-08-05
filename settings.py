@@ -11,7 +11,19 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
+AI_CATEGORIES = ("person", "vehicle", "animal")
+
+
+def _validate_ai_categories(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError("ai_categories must contain at least one category")
+    if any(not isinstance(item, str) for item in value):
+        raise ValueError("ai_categories must contain only strings")
+    selected = set(value)
+    if len(selected) != len(value) or not selected.issubset(AI_CATEGORIES):
+        raise ValueError("ai_categories may contain person, vehicle, or animal")
+    return tuple(category for category in AI_CATEGORIES if category in selected)
 
 
 @dataclass(frozen=True)
@@ -20,13 +32,14 @@ class DeviceSettings:
     ai_enabled: bool
     motion_enabled: bool
     motion_sensitivity: int
+    ai_categories: tuple[str, ...] = AI_CATEGORIES
 
     @classmethod
     def from_json(cls, payload: object) -> "DeviceSettings":
         if (
             not isinstance(payload, dict)
             or isinstance(payload.get("version"), bool)
-            or payload.get("version") != SETTINGS_VERSION
+            or payload.get("version") not in {1, SETTINGS_VERSION}
         ):
             raise ValueError("unsupported or missing settings version")
 
@@ -37,6 +50,8 @@ class DeviceSettings:
             "motion_enabled",
             "motion_sensitivity",
         }
+        if payload["version"] == SETTINGS_VERSION:
+            expected.add("ai_categories")
         if set(payload) != expected:
             raise ValueError("settings contain missing or unknown fields")
 
@@ -54,6 +69,11 @@ class DeviceSettings:
             ai_enabled=payload["ai_enabled"],
             motion_enabled=payload["motion_enabled"],
             motion_sensitivity=sensitivity,
+            ai_categories=(
+                AI_CATEGORIES
+                if payload["version"] == 1
+                else _validate_ai_categories(payload["ai_categories"])
+            ),
         )
 
     def to_json(self) -> dict[str, object]:
@@ -80,6 +100,7 @@ class SettingsStore:
         ai_enabled: bool | None = None,
         motion_enabled: bool | None = None,
         motion_sensitivity: int | None = None,
+        ai_categories: list[str] | tuple[str, ...] | None = None,
     ) -> DeviceSettings:
         with self._lock:
             changes: dict[str, object] = {}
@@ -103,6 +124,8 @@ class SettingsStore:
                 if not 1 <= motion_sensitivity <= 100:
                     raise ValueError("motion_sensitivity must be between 1 and 100")
                 changes["motion_sensitivity"] = motion_sensitivity
+            if ai_categories is not None:
+                changes["ai_categories"] = _validate_ai_categories(ai_categories)
 
             updated = replace(self._settings, **changes)
             self._write(updated)

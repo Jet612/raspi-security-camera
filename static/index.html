@@ -7,8 +7,8 @@
     <meta name="color-scheme" content="dark">
     <title>Sentinel · Device Dashboard</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=4">
-    <script src="/app.js?v=4" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=6">
+    <script src="/app.js?v=6" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -58,6 +58,12 @@
           </div>
         </header>
 
+        <section id="update-banner" class="update-banner hidden" aria-live="polite">
+          <span class="update-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg></span>
+          <span class="update-copy"><strong id="update-title">Software update available</strong><small id="update-detail">A newer version is ready to install.</small></span>
+          <button id="update-button" class="button button-update" type="button">Update now</button>
+        </section>
+
         <main id="overview">
           <section class="dashboard-grid" aria-label="Camera overview">
             <article class="panel live-panel">
@@ -106,6 +112,15 @@
                   <span class="control-copy"><strong>AI detection</strong><small id="ai-control-detail">Starting detector</small></span>
                   <span class="switch"><input id="ai-toggle" type="checkbox" checked><span></span></span>
                 </label>
+                <fieldset id="ai-category-filters" class="ai-filter-row">
+                  <legend>AI detection filter</legend>
+                  <div class="filter-options">
+                    <label class="filter-chip"><input type="checkbox" name="ai-category" value="person" checked><span>People</span></label>
+                    <label class="filter-chip"><input type="checkbox" name="ai-category" value="vehicle" checked><span>Vehicles</span></label>
+                    <label class="filter-chip"><input type="checkbox" name="ai-category" value="animal" checked><span>Animals</span></label>
+                  </div>
+                  <small>Choose what produces AI boxes and activity alerts.</small>
+                </fieldset>
 
                 <label class="control-row" for="motion-toggle">
                   <span class="control-icon amber"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"></path><path d="M12 7a5 5 0 1 0 5 5M12 11a1 1 0 1 0 1 1"></path></svg></span>
@@ -209,6 +224,16 @@
       <div class="confirm-actions">
         <button id="cancel-reboot" class="button button-secondary" type="button">Cancel</button>
         <button id="confirm-reboot" class="button button-danger" type="button">Reboot device</button>
+      </div>
+    </dialog>
+
+    <dialog id="update-dialog" class="confirm-dialog update-dialog">
+      <div class="confirm-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg></div>
+      <h2>Install this update?</h2>
+      <p>The camera service will restart. Live video will be unavailable briefly, but recordings and settings will be kept.</p>
+      <div class="confirm-actions">
+        <button id="cancel-update" class="button button-secondary" type="button">Cancel</button>
+        <button id="confirm-update" class="button button-update" type="button">Install update</button>
       </div>
     </dialog>
 

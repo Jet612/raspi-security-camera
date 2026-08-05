@@ -5,6 +5,20 @@ live MJPEG feed, recordings, detection controls, Linux system telemetry, and a
 guarded device reboot action. Slow viewers and detection never delay capture
 because both use only the latest frame.
 
+No programming experience is required for the normal installation. This guide
+starts with the beginner setup and keeps developer information near the end.
+
+## Guide
+
+- [Before you begin](#before-you-begin)
+- [Quick start](#quick-start)
+- [Using the dashboard](#using-the-dashboard)
+- [Software updates and forks](#software-updates)
+- [Changing the dashboard password](#changing-the-dashboard-password)
+- [Troubleshooting](#troubleshooting)
+- [Removing the app](#removing-the-app)
+- [Advanced installation and configuration](#advanced-installation)
+
 ## Features
 
 - Require a login for the dashboard, live feed, snapshots, APIs, health status,
@@ -15,31 +29,306 @@ because both use only the latest frame.
 - Adjust motion sensitivity from 1-100 while the camera is running
 - Automatically use a Hailo AI HAT when available and fall back to CPU detection
 - Monitor CPU, temperature, load, memory, storage, uptime, OS, and kernel details
+- Show a dashboard notification when the installed Git repository has an update
 - Reboot the Raspberry Pi through an explicitly confirmed, narrowly authorized action
 - Keep camera frames, AI inference, password verification, and recordings on the Pi
 
-## Secure installation
+## Before you begin
 
-Raspberry Pi OS normally includes `rpicam-apps`. Install the camera, OpenCV, and
-TLS tools if needed:
+You will need:
+
+- A Raspberry Pi with a camera connector; a Pi 4 or Pi 5 is recommended
+- A supported Raspberry Pi Camera Module and the correct ribbon cable
+- A microSD card with a current Raspberry Pi OS installation
+- A network connection for the Pi and the phone or computer that will view it
+- Access to Terminal on the Pi, either directly or through SSH
+
+If Raspberry Pi OS is not installed yet, use [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
+to prepare the microSD card. Raspberry Pi OS Lite and Desktop both work. During
+Imager setup, create a user, enter the Wi-Fi details, and optionally enable SSH.
+
+Turn the Pi off and unplug its power before connecting or disconnecting the
+camera ribbon cable. The exposed contacts must face the correct direction for
+your Pi model. Raspberry Pi's [camera installation guide](https://www.raspberrypi.com/documentation/accessories/camera.html#install-a-raspberry-pi-camera)
+has pictures for the different connectors.
+
+## Quick start
+
+### 1. Open Terminal on the Raspberry Pi
+
+On Raspberry Pi OS Desktop, click the Terminal icon. For a headless Pi, connect
+with SSH from another computer.
+
+### 2. Paste the install command
+
+Copy this entire line, paste it into Terminal, and press Enter:
 
 ```bash
-sudo apt update
-sudo apt install rpicam-apps python3-opencv openssl policykit-1
+curl -fsSL https://raw.githubusercontent.com/Jet612/raspi-security-camera/main/install.sh | bash
 ```
 
-If the Pi has a Hailo AI HAT, install its runtime too:
+The installer downloads the app, installs the camera and detection software,
+and configures it to start whenever the Pi boots. The first installation can
+take several minutes.
+
+The installer may ask for two passwords:
+
+- **Raspberry Pi password:** required by `sudo` while installing system
+  packages. Nothing appears while this password is typed; that is normal.
+- **Dashboard password:** the password used to view the camera. It must contain
+  at least 12 characters. Enter it twice. The username is `admin`.
+
+### 3. Open the dashboard
+
+When installation finishes, Terminal prints a line similar to:
+
+```text
+Open:        https://192.168.1.50:8080
+Username:    admin
+```
+
+Open that address on a phone, tablet, or computer connected to the same local
+network. Use the exact `https://` address, including `:8080`.
+
+The first visit normally shows a browser privacy warning because the Pi creates
+its own self-signed certificate. Compare the SHA-256 fingerprint shown by the
+browser with the fingerprint printed by the installer. If they match, use the
+browser's **Advanced** or **Continue** option. This warning does not mean the
+dashboard password or video is being sent without encryption.
+
+Sign in with username `admin` and the dashboard password created during setup.
+
+> [!IMPORTANT]
+> Keep port 8080 off the public internet. Use the dashboard on a trusted local
+> network or through a private service such as Tailscale.
+
+## Using the dashboard
+
+### Live camera
+
+- **Camera switch:** turns video capture on or off without shutting down the
+  dashboard. Turning it off also safely finishes an active recording.
+- **Start recording:** begins saving video on the Pi. The button changes to
+  **Stop recording** while recording.
+- **Snapshot:** opens the newest camera image in a new browser tab. Save it with
+  the browser's normal image-save option.
+- **Fullscreen button:** expands the live image. Use Escape or the button again
+  to leave fullscreen.
+
+The connection indicator shows whether the camera is online, starting, turned
+off, or unavailable. If the camera is unavailable, the dashboard remains open
+and keeps trying to reconnect.
+
+### Detection controls
+
+- **AI detection:** looks for security-relevant objects. Without an optional AI
+  model, the CPU fallback detects people. A compatible YOLO model adds vehicles
+  and animals.
+- **AI detection filter:** choose any combination of People, Vehicles, and
+  Animals. The selection applies immediately and is saved across restarts.
+- **Motion detection:** looks for changes between camera frames.
+- **Motion sensitivity:** higher values react to smaller changes. If normal
+  lighting changes cause alerts, lower the value. If movement is missed, raise it.
+
+Detection boxes and the current activity appear over the live view. All
+detection runs on the Pi; frames are not uploaded to a cloud service.
+
+For human-only AI detection, leave only **People** selected. Turn **Motion
+detection** off as well if you want activity alerts exclusively from detected
+people; motion detection reacts to any visible image change.
+
+### Recordings
+
+Open the **Recordings** section to see saved clips.
+
+- **Play** watches a completed recording in the dashboard.
+- **Download** saves the raw `.mjpeg` file to the viewing device. VLC can play
+  this format directly.
+- **×** permanently deletes that recording from the Pi.
+
+Recordings use the Pi's microSD card. Check the Storage value in the Device
+section occasionally and delete or download old recordings before storage fills.
+
+### Device information and reboot
+
+The **Device** section shows processor use, temperature, memory, storage,
+hostname, operating system, kernel, and uptime. **Reboot** asks for confirmation
+and then restarts the entire Pi. Live video is unavailable until startup finishes.
+
+Your camera, AI, motion, and sensitivity choices are saved. Recordings and saved
+settings remain after a service restart, software update, or device reboot.
+
+## Software updates
+
+The dashboard checks the current branch's configured Git remote about every 15
+minutes. When a different commit is available, a **Software update available**
+banner appears. Select **Update now**, review the confirmation, and choose
+**Install update**. The app only accepts a fast-forward update, then briefly
+restarts the camera service and reloads the dashboard.
+
+Updates are never installed without a signed-in user selecting the button. They
+also never overwrite local changes. If the banner says the update needs
+attention, someone has changed files in the app directory and should review
+those changes from Terminal first.
+
+To check or update manually:
+
+```bash
+cd ~/raspi-security-camera
+./update.sh --check
+./update.sh
+```
+
+The update source is not hard-coded in the dashboard. It uses the upstream
+configured for the currently checked-out branch—normally `origin/main`. A
+standard clone of a fork therefore checks and updates from that fork.
+
+### Installing a fork
+
+Fork owners should use both their raw script URL and their repository URL in the
+install command. Replace `OWNER` and `REPOSITORY` below:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPOSITORY/main/install.sh | RASPI_CAMERA_REPOSITORY=https://github.com/OWNER/REPOSITORY.git bash
+```
+
+That repository becomes `origin`, so future dashboard and `update.sh` checks
+continue to use the fork. A maintainer can intentionally configure a different
+tracking remote with Git; the updater follows that configured upstream.
+
+## Changing the dashboard password
+
+Run the same one-line install command again. When asked whether to replace the
+existing dashboard password, enter `y`, then create the new password. Existing
+recordings and settings are kept.
+
+## Troubleshooting
+
+### I lost the dashboard address
+
+Run this on the Pi:
+
+```bash
+hostname -I
+```
+
+Use the first address shown, for example `https://192.168.1.50:8080`. The phone
+or computer must be able to reach the same local network. Home routers can give
+the Pi a different address after a reboot; reserving an address in the router
+prevents that.
+
+### The browser says the connection is not private
+
+This is expected with the installer-created self-signed certificate. Verify the
+certificate fingerprint against the installer output before continuing. If the
+warning changes unexpectedly later, stop and verify the Pi's address and
+certificate again.
+
+### The dashboard opens but the camera is offline
+
+1. Shut down and unplug the Pi, then check both ends of the ribbon cable.
+2. Start the Pi and test the camera from Terminal:
+
+   ```bash
+   rpicam-hello --timeout 5s
+   ```
+
+3. Restart the camera app:
+
+   ```bash
+   sudo systemctl restart raspi-security-camera
+   ```
+
+### The dashboard does not open
+
+Check whether the service is running:
+
+```bash
+sudo systemctl status raspi-security-camera
+```
+
+Press `q` to leave the status screen. If it reports a failure, show the latest
+messages with:
+
+```bash
+journalctl -u raspi-security-camera -n 50 --no-pager
+```
+
+Rerunning the one-line installer safely repairs the service files and keeps
+recordings and settings.
+
+### I forgot the dashboard password
+
+Rerun the install command and answer `y` when asked to replace the password.
+The old password cannot be displayed because only a protected verifier is stored.
+
+### An update is blocked by local changes
+
+The updater stops so it cannot erase someone's work. If you intentionally
+edited the application, commit or remove those changes with Git before trying
+again. If you did not edit it, save the output of these commands and ask the
+fork maintainer for help:
+
+```bash
+cd ~/raspi-security-camera
+git status
+./update.sh --check
+```
+
+### View live service messages
+
+```bash
+journalctl -u raspi-security-camera -f
+```
+
+Press Ctrl+C to stop following the messages.
+
+## Removing the app
+
+First download any recordings you want to keep. Then stop the service and remove
+its system integration:
+
+```bash
+sudo systemctl disable --now raspi-security-camera
+sudo rm -f /etc/systemd/system/raspi-security-camera.service
+sudo rm -f /etc/systemd/system/raspi-security-camera-update.service
+sudo rm -f /etc/polkit-1/rules.d/50-raspi-security-camera-reboot.rules
+sudo systemctl daemon-reload
+```
+
+The app folder still contains the recordings. To remove the application files
+and recordings too, delete the `raspi-security-camera` folder from your home
+directory. Protected credentials and saved control settings can be removed with:
+
+```bash
+sudo rm -rf /etc/raspi-security-camera /var/lib/raspi-security-camera
+```
+
+These final deletion steps cannot be undone.
+
+## Advanced installation
+
+To inspect the code before installing, clone it and run the local installer:
+
+```bash
+git clone https://github.com/Jet612/raspi-security-camera.git
+cd raspi-security-camera
+./install-service.sh
+```
+
+The local installer installs Git, `rpicam-apps`, OpenCV, NumPy, OpenSSL, and polkit
+through Raspberry Pi OS. Pass `--skip-dependencies` only when those packages are
+already managed separately. If the Pi has a Hailo AI HAT, install its optional
+runtime before or after installing the app:
 
 ```bash
 sudo apt install hailo-all
 ```
 
-Test the camera, then install the service:
+You can test the camera independently with:
 
 ```bash
 rpicam-hello --timeout 5s
-chmod +x install-service.sh
-./install-service.sh
 ```
 
 The installer prompts for a dashboard password of at least 12 characters. It
@@ -53,12 +342,6 @@ The generated certificate is self-signed. Verify the printed SHA-256 fingerprint
 before accepting or importing it in a browser. A certificate from a private CA,
 Caddy, or Tailscale HTTPS avoids the browser warning and provides stronger server
 identity verification.
-
-Follow service logs with:
-
-```bash
-journalctl -u raspi-security-camera -f
-```
 
 Rerun `./install-service.sh` to change the password. Existing login sessions are
 memory-only and are invalidated whenever the service restarts. The installer
@@ -114,8 +397,11 @@ remain HTTPS-only.
 - The service runs without Linux capabilities and with systemd filesystem,
   kernel, namespace, and privilege-escalation restrictions.
 - Reboot uses systemd-logind over D-Bus. The installed polkit rule permits only
-  reboot actions for the service account; it does not grant shell or general
+  reboot actions from the camera service; it does not grant shell or general
   systemd administration privileges.
+- Update discovery is read-only. Installing an update starts one fixed,
+  sandboxed systemd job that can write only the application checkout, can only
+  fast-forward its configured upstream, and may restart only the camera service.
 
 Authentication protects the application, but it does not replace network access
 control. Keep port 8080 off the public internet. Prefer a LAN firewall, Tailscale
@@ -176,6 +462,7 @@ hailortcli fw-control identify
 | `MOTION_THRESHOLD` | `0.012` | Initial changed-image fraction |
 | `MOTION_HOLD_SECONDS` | `3` | Hold an alert after movement stops |
 | `AI_ENABLED` | `true` | Initial AI detection state |
+| `AI_CATEGORIES` | `person,vehicle,animal` | Initial AI result filters; dashboard choices are persisted |
 | `AI_BACKEND` | `auto` | `auto`, `hailo`, or `cpu` |
 | `AI_MODEL` | automatic | Backward-compatible `.hef` or `.onnx` model override |
 | `AI_CPU_MODEL` | `models/yolov8n.onnx` when present | Compatible YOLOv8 ONNX model |
@@ -195,11 +482,12 @@ The installer-managed password and TLS paths live in
 `/etc/raspi-security-camera/environment` and intentionally take precedence over
 the ordinary overrides.
 
-Camera enabled state, AI detection, motion detection, and motion sensitivity are
-saved atomically whenever they are changed in the dashboard. The system service
-stores them in `/var/lib/raspi-security-camera/device-settings.json` and restores
-them before capture and detection start. Active recordings are intentionally not
-resumed after a service or device restart.
+Camera enabled state, AI detection, AI category filters, motion detection, and
+motion sensitivity are saved atomically whenever they are changed in the
+dashboard. The system service stores them in
+`/var/lib/raspi-security-camera/device-settings.json` and restores them before
+capture and detection start. Active recordings are intentionally not resumed
+after a service or device restart.
 
 `CAMERA_COMMAND` can replace the entire capture command for development or a
 custom pipeline. It must continuously emit JPEG images to stdout.
@@ -226,6 +514,8 @@ and DELETE endpoints also require the session's `X-CSRF-Token` header.
 - `POST /api/detection` - update detection settings
 - `GET /api/system` - device resource and OS telemetry
 - `POST /api/system/reboot` with `{"confirm":"reboot"}` - reboot the Pi
+- `GET /api/update` - configured Git upstream and update availability
+- `POST /api/update` with `{"confirm":"update"}` - start a safe fast-forward update
 - `GET /api/recordings` - list local recordings
 - `POST /api/recordings/start` and `/api/recordings/stop` - recording control
 - `GET /api/recordings/<id>/stream.mjpg` - browser playback

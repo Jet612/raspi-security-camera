@@ -26,6 +26,7 @@ class SettingsStoreTests(unittest.TestCase):
                 ai_enabled=False,
                 motion_enabled=True,
                 motion_sensitivity=67,
+                ai_categories=["person"],
             )
 
             restored = SettingsStore(path, DEFAULTS).current
@@ -33,6 +34,7 @@ class SettingsStoreTests(unittest.TestCase):
             self.assertFalse(restored.ai_enabled)
             self.assertTrue(restored.motion_enabled)
             self.assertEqual(restored.motion_sensitivity, 67)
+            self.assertEqual(restored.ai_categories, ("person",))
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
     def test_rejects_invalid_or_overexposed_settings_files(self):
@@ -53,6 +55,32 @@ class SettingsStoreTests(unittest.TestCase):
             store = SettingsStore(Path(directory) / "settings.json", DEFAULTS)
             with self.assertRaisesRegex(ValueError, "integer"):
                 store.update(motion_sensitivity=50.5)  # type: ignore[arg-type]
+
+    def test_rejects_empty_or_unknown_ai_categories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json", DEFAULTS)
+            with self.assertRaisesRegex(ValueError, "at least one"):
+                store.update(ai_categories=[])
+            with self.assertRaisesRegex(ValueError, "person, vehicle, or animal"):
+                store.update(ai_categories=["package"])
+
+    def test_version_one_settings_migrate_to_all_ai_categories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "camera_enabled": True,
+                        "ai_enabled": True,
+                        "motion_enabled": False,
+                        "motion_sensitivity": 80,
+                    }
+                )
+            )
+            path.chmod(0o600)
+            restored = SettingsStore(path, DEFAULTS).current
+            self.assertEqual(restored.ai_categories, ("person", "vehicle", "animal"))
 
 
 if __name__ == "__main__":

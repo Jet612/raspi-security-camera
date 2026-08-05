@@ -138,7 +138,7 @@ class SystemMonitor:
 
 
 class SystemController:
-    """Schedules a reboot using a narrowly scoped logind D-Bus call."""
+    """Requests narrowly authorized device actions over D-Bus."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -175,6 +175,34 @@ class SystemController:
             target=self._reboot, args=(delay,), name="device-reboot", daemon=True
         ).start()
         return True
+
+    def schedule_update(self) -> None:
+        busctl = shutil.which("busctl")
+        if busctl is None:
+            raise RuntimeError("busctl is unavailable; install systemd")
+        try:
+            result = subprocess.run(
+                [
+                    busctl,
+                    "call",
+                    "org.freedesktop.systemd1",
+                    "/org/freedesktop/systemd1",
+                    "org.freedesktop.systemd1.Manager",
+                    "StartUnit",
+                    "ss",
+                    "raspi-security-camera-update.service",
+                    "replace",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("could not start the software update") from exc
+        if result.returncode:
+            LOG.error("Software update request failed: %s", result.stderr.strip())
+            raise RuntimeError("software update is not authorized or unavailable")
 
     def _reboot(self, delay: float) -> None:
         time.sleep(delay)

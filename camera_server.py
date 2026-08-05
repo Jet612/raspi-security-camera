@@ -23,12 +23,13 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from auth import AuthConfig, AuthSession, Authenticator, LoginRateLimited, hash_password
 from detection import DetectionEngine
 from recording import RecordingManager
 from settings import DeviceSettings, SettingsStore
+from software_update import SoftwareUpdater
 from system_control import SystemController, SystemMonitor
 
 
@@ -396,6 +397,7 @@ class CameraHTTPServer(ThreadingHTTPServer):
         *,
         system_monitor: SystemMonitor | None = None,
         system_controller: SystemController | None = None,
+        software_updater: SoftwareUpdater | None = None,
         settings_store: SettingsStore | None = None,
         secure_transport: bool = False,
     ) -> None:
@@ -403,6 +405,7 @@ class CameraHTTPServer(ThreadingHTTPServer):
         self.authenticator = authenticator
         self.system_monitor = system_monitor or SystemMonitor()
         self.system_controller = system_controller or SystemController()
+        self.software_updater = software_updater or SoftwareUpdater(ROOT)
         self.settings_store = settings_store
         self._settings_lock = threading.Lock()
         self.secure_transport = secure_transport
@@ -420,6 +423,7 @@ class CameraHTTPServer(ThreadingHTTPServer):
         ai: bool | None,
         motion: bool | None,
         sensitivity: float | None,
+        categories: list[str] | None,
     ) -> dict[str, object]:
         detection = self.stream.detection
         if detection is None:
@@ -433,9 +437,13 @@ class CameraHTTPServer(ThreadingHTTPServer):
                     ai_enabled=ai,
                     motion_enabled=motion,
                     motion_sensitivity=sensitivity_value,
+                    ai_categories=categories,
                 )
             return detection.set_enabled(
-                ai=ai, motion=motion, sensitivity=sensitivity_value
+                ai=ai,
+                motion=motion,
+                sensitivity=sensitivity_value,
+                categories=categories,
             )
 
     def get_request(self) -> tuple[object, object]:
@@ -464,7 +472,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         LOG.info("%s - %s", self.client_address[0], fmt % args)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlsplit(self.path).path
+        request_url = urlsplit(self.path)
+        path = request_url.path
         existing_session = self._current_session()
         if path == "/login":
             if existing_session is not None:
@@ -488,6 +497,9 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/system":
             self._send_json(self.server.system_monitor.snapshot())
+        elif path == "/api/update":
+            force = parse_qs(request_url.query).get("refresh") == ["1"]
+            self._send_json(self.server.software_updater.status(force=force))
         elif path == "/api/recordings":
             self._send_json({"recordings": self.server.stream.recordings.list()})
         elif path == "/healthz":
@@ -534,13 +546,23 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                 ai = self._optional_bool(payload, "ai_enabled")
                 motion = self._optional_bool(payload, "motion_enabled")
                 sensitivity = self._optional_number(payload, "motion_sensitivity")
-                if ai is None and motion is None and sensitivity is None:
+                categories = self._optional_string_list(payload, "ai_categories")
+                if (
+                    ai is None
+                    and motion is None
+                    and sensitivity is None
+                    and categories is None
+                ):
                     raise ValueError(
-                        "ai_enabled, motion_enabled, or motion_sensitivity is required"
+                        "ai_enabled, ai_categories, motion_enabled, or "
+                        "motion_sensitivity is required"
                     )
                 self._send_json(
                     self.server.set_detection(
-                        ai=ai, motion=motion, sensitivity=sensitivity
+                        ai=ai,
+                        motion=motion,
+                        sensitivity=sensitivity,
+                        categories=categories,
                     )
                 )
             elif path == "/api/recordings/start":
@@ -569,6 +591,30 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                     {"rebooting": True, "already_pending": not scheduled},
                     HTTPStatus.ACCEPTED,
                 )
+            elif path == "/api/update":
+                payload = self._read_json()
+                if payload.get("confirm") != "update":
+                    raise ValueError("update confirmation is required")
+                update_status = self.server.software_updater.status(force=True)
+                if not update_status.get("available"):
+                    self._send_json(
+                        {"error": "the app is already up to date"},
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
+                if not update_status.get("can_update"):
+                    self._send_json(
+                        {
+                            "error": str(
+                                update_status.get("message", "the update is blocked")
+                            )
+                        },
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
+                self.server.system_controller.schedule_update()
+                self.server.software_updater.invalidate()
+                self._send_json({"updating": True}, HTTPStatus.ACCEPTED)
             else:
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except (ValueError, json.JSONDecodeError) as exc:
@@ -697,6 +743,19 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{key} must be a number")
         return float(value)
+
+    @staticmethod
+    def _optional_string_list(
+        payload: dict[str, object], key: str
+    ) -> list[str] | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) for item in value
+        ):
+            raise ValueError(f"{key} must be an array of strings")
+        return value
 
     def _base_headers(self, content_type: str) -> None:
         self.send_header("Content-Type", content_type)
@@ -917,6 +976,7 @@ def main() -> int:
             ai_enabled=detection.ai_enabled,
             motion_enabled=detection.motion_enabled,
             motion_sensitivity=detection.motion_sensitivity,
+            ai_categories=detection.ai_categories,
         )
         settings_store = SettingsStore(
             os.getenv(
@@ -929,11 +989,14 @@ def main() -> int:
             ai=saved_settings.ai_enabled,
             motion=saved_settings.motion_enabled,
             sensitivity=saved_settings.motion_sensitivity,
+            categories=saved_settings.ai_categories,
         )
         LOG.info(
-            "Restored device settings: camera=%s ai=%s motion=%s sensitivity=%d",
+            "Restored device settings: camera=%s ai=%s categories=%s motion=%s "
+            "sensitivity=%d",
             saved_settings.camera_enabled,
             saved_settings.ai_enabled,
+            ",".join(saved_settings.ai_categories),
             saved_settings.motion_enabled,
             saved_settings.motion_sensitivity,
         )

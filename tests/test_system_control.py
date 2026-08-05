@@ -40,3 +40,14 @@ class SystemControllerTests(unittest.TestCase):
             with patch("system_control.subprocess.run", return_value=unavailable):
                 with self.assertRaisesRegex(RuntimeError, "not authorized"):
                     controller.schedule_reboot()
+
+    def test_update_starts_only_the_fixed_update_unit(self):
+        controller = SystemController()
+        completed = CompletedProcess([], 0, stdout='o "/job/1"\n', stderr="")
+        with patch("system_control.shutil.which", return_value="/usr/bin/busctl"):
+            with patch("system_control.subprocess.run", return_value=completed) as run:
+                controller.schedule_update()
+        command = run.call_args.args[0]
+        self.assertIn("StartUnit", command)
+        self.assertIn("raspi-security-camera-update.service", command)
+        self.assertNotIn("raspi-security-camera.service", command)

@@ -1,10 +1,30 @@
 polkit.addRule(function(action, subject) {
+    if (subject.user !== "__SERVICE_USER__") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
     var rebootActions = [
         "org.freedesktop.login1.reboot",
         "org.freedesktop.login1.reboot-multiple-sessions"
     ];
 
-    if (rebootActions.indexOf(action.id) >= 0 && subject.user === "__SERVICE_USER__") {
+    if (rebootActions.indexOf(action.id) >= 0 &&
+        subject.system_unit === "raspi-security-camera.service") {
         return polkit.Result.YES;
     }
+
+    if (action.id === "org.freedesktop.systemd1.manage-units") {
+        var unit = action.lookup("unit");
+        var verb = action.lookup("verb");
+        if (subject.system_unit === "raspi-security-camera.service" &&
+            unit === "raspi-security-camera-update.service" && verb === "start") {
+            return polkit.Result.YES;
+        }
+        if (subject.system_unit === "raspi-security-camera-update.service" &&
+            unit === "raspi-security-camera.service" && verb === "restart") {
+            return polkit.Result.YES;
+        }
+    }
+
+    return polkit.Result.NOT_HANDLED;
 });

@@ -45,6 +45,34 @@ class DetectionFilterTests(unittest.TestCase):
         self.assertFalse(status["motion"]["enabled"])
         self.assertEqual(status["ai"]["state"], "disabled")
 
+    def test_ai_categories_can_be_filtered_at_runtime(self):
+        with patch.dict(os.environ, {"AI_CATEGORIES": "person,animal"}, clear=True):
+            engine = DetectionEngine()
+        self.assertEqual(engine.status()["ai"]["categories"], ["person", "animal"])
+        engine._detections = [
+            {"label": "person", "category": "person", "confidence": 0.9},
+            {"label": "dog", "category": "animal", "confidence": 0.8},
+        ]
+
+        status = engine.set_enabled(categories=["person"])
+
+        self.assertEqual(status["ai"]["categories"], ["person"])
+        self.assertEqual([item["label"] for item in status["detections"]], ["person"])
+        engine._model = Mock()
+        engine._model.detect.return_value = [
+            {"label": "person", "category": "person", "confidence": 0.9},
+            {"label": "dog", "category": "animal", "confidence": 0.8},
+        ]
+        engine._ai_backend_name = "cpu"
+        engine._analyse_objects(image=None, cv2=None, now=time.monotonic())
+        self.assertEqual(
+            [item["label"] for item in engine.status()["detections"]], ["person"]
+        )
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            engine.set_enabled(categories=[])
+        with self.assertRaisesRegex(ValueError, "person, vehicle, or animal"):
+            engine.set_enabled(categories=["package"])
+
     def test_disabled_worker_does_not_import_native_dependencies(self):
         with patch.dict(
             os.environ,
