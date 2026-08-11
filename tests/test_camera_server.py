@@ -1,8 +1,15 @@
 import os
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
-from camera_server import CameraStream, Config, TLSConfig, parse_byte_range
+from camera_server import (
+    CameraStream,
+    Config,
+    TLSConfig,
+    night_mode_is_active,
+    parse_byte_range,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -52,6 +59,38 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(parse_byte_range("bytes=-10", 100), (90, 99))
         with self.assertRaisesRegex(ValueError, "invalid byte range"):
             parse_byte_range("bytes=100-110", 100)
+
+    def test_night_capture_adds_low_light_camera_controls(self):
+        with patch("camera_server.shutil.which", return_value="/usr/bin/rpicam-vid"):
+            config = Config.from_environment()
+            normal = config.capture_argv()
+            night = config.capture_argv(night_mode=True)
+        self.assertNotIn("--gain", normal)
+        self.assertIn("--exposure", night)
+        self.assertIn("--gain", night)
+        self.assertIn("--denoise", night)
+
+    def test_night_schedule_supports_daytime_and_overnight_ranges(self):
+        self.assertTrue(
+            night_mode_is_active(
+                "scheduled", "20:00", "06:00", datetime(2026, 1, 1, 23, 0)
+            )
+        )
+        self.assertTrue(
+            night_mode_is_active(
+                "scheduled", "20:00", "06:00", datetime(2026, 1, 2, 5, 59)
+            )
+        )
+        self.assertFalse(
+            night_mode_is_active(
+                "scheduled", "20:00", "06:00", datetime(2026, 1, 2, 12, 0)
+            )
+        )
+        self.assertTrue(
+            night_mode_is_active(
+                "scheduled", "08:00", "17:00", datetime(2026, 1, 2, 12, 0)
+            )
+        )
 
 
 class StreamTests(unittest.TestCase):
@@ -136,6 +175,17 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(stream.preview.fps, 5)
         self.assertEqual(status["video_settings"]["capture"]["quality"], 85)
         self.assertEqual(status["video_settings"]["live"]["quality"], 40)
+
+    def test_night_mode_can_be_reconfigured_without_recreating_stream(self):
+        stream = CameraStream(self.config)
+
+        status = stream.configure_night(
+            mode="scheduled", start="20:00", end="06:00"
+        )
+
+        self.assertEqual(status["night"]["mode"], "scheduled")
+        self.assertEqual(status["night"]["start"], "20:00")
+        self.assertFalse(status["night"]["supported"])
 
 
 if __name__ == "__main__":

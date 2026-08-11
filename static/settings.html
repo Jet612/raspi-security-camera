@@ -7,8 +7,8 @@
     <meta name="color-scheme" content="dark">
     <title>Settings · Sentinel</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=11">
-    <script src="/app.js?v=10" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=12">
+    <script src="/app.js?v=11" defer></script>
   </head>
   <body data-page="settings">
     <div class="app-shell">
@@ -32,6 +32,19 @@
             <article class="panel settings-panel camera-control-panel">
               <div class="panel-heading"><div><span class="panel-kicker">Hardware</span><h3>Camera</h3></div></div>
               <label class="setting-row" for="camera-toggle"><span><strong>Camera capture</strong><small id="camera-control-detail">Capture video, snapshots, and recordings</small></span><span class="switch"><input id="camera-toggle" type="checkbox"><span></span></span></label>
+            </article>
+
+            <article class="panel settings-panel night-mode-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">Low light</span><h3>Night mode</h3></div><span id="night-mode-state" class="recommended-badge">Off</span></div>
+              <form id="night-mode-form" class="quality-form">
+                <div class="night-mode-fields">
+                  <label class="quality-field" for="night-mode"><span>Mode</span><select id="night-mode"><option value="off">Off</option><option value="on">On</option><option value="scheduled">Schedule</option></select></label>
+                  <label class="quality-field" for="night-start"><span>Turn on at</span><input id="night-start" type="time" value="20:00" required></label>
+                  <label class="quality-field" for="night-end"><span>Turn off at</span><input id="night-end" type="time" value="06:00" required></label>
+                </div>
+                <div id="night-mode-detail" class="quality-advisory" role="status">Night mode increases sensor gain and denoising for dark scenes.</div>
+                <div class="quality-footer"><span id="night-mode-current" class="quality-current">Current: off</span><button id="save-night-mode" class="button button-secondary" type="submit" disabled>Apply night mode</button></div>
+              </form>
             </article>
 
             <article class="panel settings-panel quality-panel">

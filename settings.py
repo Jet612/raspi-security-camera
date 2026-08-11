@@ -11,8 +11,9 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 AI_CATEGORIES = ("person", "vehicle", "animal")
+NIGHT_MODES = ("off", "on", "scheduled")
 
 
 def _validated_integer(
@@ -36,6 +37,33 @@ def _validate_ai_categories(value: object) -> tuple[str, ...]:
     return tuple(category for category in AI_CATEGORIES if category in selected)
 
 
+def _validate_clock_time(name: str, value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 5
+        or value[2] != ":"
+        or not value[:2].isdigit()
+        or not value[3:].isdigit()
+    ):
+        raise ValueError(f"{name} must use 24-hour HH:MM format")
+    hour, minute = int(value[:2]), int(value[3:])
+    if hour > 23 or minute > 59:
+        raise ValueError(f"{name} must use 24-hour HH:MM format")
+    return value
+
+
+def validate_night_settings(
+    mode: object, start: object, end: object
+) -> tuple[str, str, str]:
+    if not isinstance(mode, str) or mode not in NIGHT_MODES:
+        raise ValueError("night_mode must be off, on, or scheduled")
+    validated_start = _validate_clock_time("night_start", start)
+    validated_end = _validate_clock_time("night_end", end)
+    if mode == "scheduled" and validated_start == validated_end:
+        raise ValueError("night_start and night_end must be different")
+    return mode, validated_start, validated_end
+
+
 @dataclass(frozen=True)
 class DeviceSettings:
     camera_enabled: bool
@@ -51,6 +79,9 @@ class DeviceSettings:
     live_height: int = 540
     live_fps: int = 10
     live_quality: int = 55
+    night_mode: str = "off"
+    night_start: str = "20:00"
+    night_end: str = "06:00"
 
     @classmethod
     def from_json(
@@ -59,7 +90,7 @@ class DeviceSettings:
         if (
             not isinstance(payload, dict)
             or isinstance(payload.get("version"), bool)
-            or payload.get("version") not in {1, 2, SETTINGS_VERSION}
+            or payload.get("version") not in {1, 2, 3, SETTINGS_VERSION}
         ):
             raise ValueError("unsupported or missing settings version")
 
@@ -72,7 +103,7 @@ class DeviceSettings:
         }
         if payload["version"] >= 2:
             expected.add("ai_categories")
-        if payload["version"] == SETTINGS_VERSION:
+        if payload["version"] >= 3:
             expected.update(
                 {
                     "capture_width",
@@ -85,6 +116,8 @@ class DeviceSettings:
                     "live_quality",
                 }
             )
+        if payload["version"] == SETTINGS_VERSION:
+            expected.update({"night_mode", "night_start", "night_end"})
         if set(payload) != expected:
             raise ValueError("settings contain missing or unknown fields")
 
@@ -105,7 +138,7 @@ class DeviceSettings:
             "live_fps": quality_defaults.live_fps,
             "live_quality": quality_defaults.live_quality,
         }
-        if payload["version"] == SETTINGS_VERSION:
+        if payload["version"] >= 3:
             ranges = {
                 "capture_width": (320, 4608),
                 "capture_height": (240, 2592),
@@ -121,6 +154,18 @@ class DeviceSettings:
                 for name, limits in ranges.items()
             }
 
+        night_values = (
+            validate_night_settings(
+                payload["night_mode"], payload["night_start"], payload["night_end"]
+            )
+            if payload["version"] == SETTINGS_VERSION
+            else (
+                quality_defaults.night_mode,
+                quality_defaults.night_start,
+                quality_defaults.night_end,
+            )
+        )
+
         return cls(
             camera_enabled=payload["camera_enabled"],
             ai_enabled=payload["ai_enabled"],
@@ -132,6 +177,9 @@ class DeviceSettings:
                 else _validate_ai_categories(payload["ai_categories"])
             ),
             **quality_values,
+            night_mode=night_values[0],
+            night_start=night_values[1],
+            night_end=night_values[2],
         )
 
     def to_json(self) -> dict[str, object]:
@@ -167,6 +215,9 @@ class SettingsStore:
         live_height: int | None = None,
         live_fps: int | None = None,
         live_quality: int | None = None,
+        night_mode: str | None = None,
+        night_start: str | None = None,
+        night_end: str | None = None,
     ) -> DeviceSettings:
         with self._lock:
             changes: dict[str, object] = {}
@@ -207,6 +258,29 @@ class SettingsStore:
                     changes[name] = _validated_integer(
                         name, value, minimum, maximum
                     )
+
+            candidate_night = {
+                "night_mode": (
+                    self._settings.night_mode if night_mode is None else night_mode
+                ),
+                "night_start": (
+                    self._settings.night_start if night_start is None else night_start
+                ),
+                "night_end": (
+                    self._settings.night_end if night_end is None else night_end
+                ),
+            }
+            if any(value is not None for value in (night_mode, night_start, night_end)):
+                validated_night = validate_night_settings(
+                    candidate_night["night_mode"],
+                    candidate_night["night_start"],
+                    candidate_night["night_end"],
+                )
+                changes.update(
+                    night_mode=validated_night[0],
+                    night_start=validated_night[1],
+                    night_end=validated_night[2],
+                )
 
             updated = replace(self._settings, **changes)
             self._write(updated)

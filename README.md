@@ -151,6 +151,11 @@ Open the **Settings** page for all camera and detection controls.
 
 - **Camera capture:** turns video capture on or off without shutting down the
   dashboard. Turning it off also safely finishes an active recording.
+- **Night mode:** choose Off, On, or a daily schedule using the Raspberry Pi's
+  local clock. Scheduled ranges can cross midnight. When active, the standard
+  camera pipeline uses a long-exposure profile, higher sensor gain, stronger
+  denoising, and a small brightness/contrast lift; applying it briefly restarts
+  capture.
 - **Recordings & snapshots:** choose source resolution, JPEG quality, and frame
   rate. The recommended default is 1920×1080, Q85, and 30 FPS. Applying a change
   briefly restarts camera capture; an active recording must be stopped first.
@@ -593,15 +598,17 @@ The installer-managed password and TLS paths live in
 `/etc/raspi-security-camera/environment` and intentionally take precedence over
 the ordinary overrides.
 
-Camera enabled state, AI detection, AI category filters, motion detection, and
-motion sensitivity are saved atomically whenever they are changed in the
-dashboard. The system service stores them in
+Camera enabled state, night mode and its schedule, AI detection, AI category
+filters, motion detection, and motion sensitivity are saved atomically whenever
+they are changed in the dashboard. The system service stores them in
 `/var/lib/raspi-security-camera/device-settings.json` and restores them before
 capture and detection start. Active recordings are intentionally not resumed
 after a service or device restart.
 
 `CAMERA_COMMAND` can replace the entire capture command for development or a
-custom pipeline. It must continuously emit JPEG images to stdout.
+custom pipeline. It must continuously emit JPEG images to stdout. Dashboard
+night-mode controls are unavailable when a custom command is configured because
+the app cannot safely infer which low-light options that command supports.
 
 ## Recordings
 
@@ -630,6 +637,8 @@ and DELETE endpoints also require the session's `X-CSRF-Token` header.
 - `GET /api/session` - current user and CSRF token
 - `GET /api/status` - camera, recording, AI, and motion state
 - `POST /api/camera` with `{"enabled":true}` - turn capture on/off
+- `POST /api/night-mode` with `{"mode":"scheduled","start":"20:00","end":"06:00"}`
+  - persist and apply manual or daily scheduled night mode
 - `POST /api/detection` - update detection settings
 - `POST /api/video-settings` - persist and apply capture or live-preview
   resolution, frame rate, and JPEG quality

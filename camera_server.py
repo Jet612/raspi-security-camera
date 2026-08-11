@@ -31,7 +31,7 @@ from auth import AuthConfig, AuthSession, Authenticator, LoginRateLimited, hash_
 from detection import DetectionEngine
 from preview import LivePreview
 from recording import RecordingManager
-from settings import DeviceSettings, SettingsStore
+from settings import DeviceSettings, SettingsStore, validate_night_settings
 from software_update import SoftwareUpdater
 from system_control import SystemController, SystemMonitor
 
@@ -46,6 +46,23 @@ MAX_JPEG_BYTES = 32 * 1024 * 1024
 
 class VideoSettingsConflict(RuntimeError):
     """A requested capture change is unsafe in the current device state."""
+
+
+def night_mode_is_active(
+    mode: str, start: str, end: str, now: datetime | None = None
+) -> bool:
+    """Return whether a manual or local-time schedule currently enables night mode."""
+    if mode == "on":
+        return True
+    if mode != "scheduled":
+        return False
+    local_now = now or datetime.now().astimezone()
+    current_minutes = local_now.hour * 60 + local_now.minute
+    start_minutes = int(start[:2]) * 60 + int(start[3:])
+    end_minutes = int(end[:2]) * 60 + int(end[3:])
+    if start_minutes < end_minutes:
+        return start_minutes <= current_minutes < end_minutes
+    return current_minutes >= start_minutes or current_minutes < end_minutes
 
 
 @lru_cache(maxsize=16)
@@ -153,7 +170,7 @@ class Config:
             live_quality=env_int("CAMERA_LIVE_QUALITY", 55, 20, 90),
         )
 
-    def capture_argv(self) -> list[str]:
+    def capture_argv(self, night_mode: bool = False) -> list[str]:
         if self.camera_command:
             return shlex.split(self.camera_command)
 
@@ -163,7 +180,7 @@ class Config:
                 "rpicam-vid was not found; install the Raspberry Pi rpicam-apps package"
             )
 
-        return [
+        command = [
             binary,
             "--timeout",
             "0",
@@ -182,9 +199,24 @@ class Config:
             self.sensor_mode,
             "--autofocus-mode",
             self.autofocus_mode,
-            "--output",
-            "-",
         ]
+        if night_mode:
+            command.extend(
+                [
+                    "--exposure",
+                    "long",
+                    "--gain",
+                    "8",
+                    "--denoise",
+                    "cdn_hq",
+                    "--brightness",
+                    "0.1",
+                    "--contrast",
+                    "1.1",
+                ]
+            )
+        command.extend(["--output", "-"])
+        return command
 
 
 @dataclass(frozen=True)
@@ -242,7 +274,13 @@ class CameraStream:
         recordings: RecordingManager | None = None,
         *,
         initial_enabled: bool = True,
+        night_mode: str = "off",
+        night_start: str = "20:00",
+        night_end: str = "06:00",
     ) -> None:
+        night_mode, night_start, night_end = validate_night_settings(
+            night_mode, night_start, night_end
+        )
         self.config = config
         self.detection = detection
         self.recordings = recordings or RecordingManager(fps=config.framerate)
@@ -266,12 +304,26 @@ class CameraStream:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._restart_capture = threading.Event()
+        self._night_lock = threading.Lock()
+        self._night_mode = night_mode
+        self._night_start = night_start
+        self._night_end = night_end
+        self._night_effective = night_mode_is_active(
+            night_mode, night_start, night_end
+        )
+        self._night_wake = threading.Event()
         self._thread = threading.Thread(
             target=self._supervise, name="camera-capture", daemon=True
+        )
+        self._night_thread = threading.Thread(
+            target=self._monitor_night_schedule,
+            name="camera-night-schedule",
+            daemon=True,
         )
 
     def start(self) -> None:
         self.preview.start()
+        self._night_thread.start()
         self._thread.start()
 
     def stop(self) -> None:
@@ -285,6 +337,7 @@ class CameraStream:
             except subprocess.TimeoutExpired:
                 process.kill()
         self._thread.join(timeout=5)
+        self._night_thread.join(timeout=2)
         self.preview.stop()
         self.recordings.close()
 
@@ -292,6 +345,7 @@ class CameraStream:
         """Signal workers immediately without waiting for their cleanup."""
         self._stop.set()
         self._wake.set()
+        self._night_wake.set()
         with self._condition:
             self._condition.notify_all()
 
@@ -317,6 +371,66 @@ class CameraStream:
             if process and process.poll() is None:
                 process.terminate()
         return self.status()
+
+    def configure_night(
+        self, *, mode: str, start: str, end: str
+    ) -> dict[str, object]:
+        """Apply manual/scheduled low-light capture settings at runtime."""
+        mode, start, end = validate_night_settings(mode, start, end)
+        effective = night_mode_is_active(mode, start, end)
+        with self._night_lock:
+            effective_changed = effective != self._night_effective
+            self._night_mode = mode
+            self._night_start = start
+            self._night_end = end
+            self._night_effective = effective
+        self._night_wake.set()
+        if effective_changed:
+            self._restart_for_night_change()
+        return self.status()
+
+    def _monitor_night_schedule(self) -> None:
+        while not self._stop.is_set():
+            self._refresh_night_schedule()
+            self._night_wake.wait(timeout=15.0)
+            self._night_wake.clear()
+
+    def _refresh_night_schedule(self, now: datetime | None = None) -> None:
+        with self._night_lock:
+            effective = night_mode_is_active(
+                self._night_mode, self._night_start, self._night_end, now
+            )
+            if effective == self._night_effective:
+                return
+            self._night_effective = effective
+        self._restart_for_night_change()
+
+    def _restart_for_night_change(self) -> None:
+        if self.config.camera_command:
+            return
+        with self._capture_lock:
+            process = self._process
+            restart_running_process = bool(
+                self._enabled and process is not None and process.poll() is None
+            )
+            if restart_running_process:
+                self._restart_capture.set()
+        if not restart_running_process:
+            return
+        self.preview.clear()
+        with self._condition:
+            self._frame = None
+            self._frame_at = 0.0
+            self._frame_times.clear()
+            self._sequence += 1
+            self._state = "starting"
+            self._error = None
+            self._condition.notify_all()
+        self._wake.set()
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
 
     def configure_video(
         self,
@@ -428,7 +542,7 @@ class CameraStream:
                 continue
             try:
                 with self._capture_lock:
-                    argv = self.config.capture_argv()
+                    argv = self.config.capture_argv(self._night_effective)
                     LOG.info("Starting camera capture: %s", shlex.join(argv))
                     self._set_state("starting")
                     self._process = subprocess.Popen(
@@ -588,6 +702,15 @@ class CameraStream:
                 "quality": self.config.live_quality,
             },
         }
+        with self._night_lock:
+            status["night"] = {
+                "mode": self._night_mode,
+                "effective": self._night_effective,
+                "start": self._night_start,
+                "end": self._night_end,
+                "timezone": datetime.now().astimezone().tzname() or "local time",
+                "supported": self.config.camera_command is None,
+            }
         return status
 
 
@@ -622,6 +745,17 @@ class CameraHTTPServer(ThreadingHTTPServer):
             if self.settings_store is not None:
                 self.settings_store.update(camera_enabled=enabled)
             return self.stream.set_enabled(enabled)
+
+    def set_night_mode(
+        self, *, mode: str, start: str, end: str
+    ) -> dict[str, object]:
+        mode, start, end = validate_night_settings(mode, start, end)
+        with self._settings_lock:
+            if self.settings_store is not None:
+                self.settings_store.update(
+                    night_mode=mode, night_start=start, night_end=end
+                )
+            return self.stream.configure_night(mode=mode, start=start, end=end)
 
     def set_detection(
         self,
@@ -834,6 +968,18 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                 payload = self._read_json()
                 enabled = self._required_bool(payload, "enabled")
                 self._send_json(self.server.set_camera_enabled(enabled))
+            elif path == "/api/night-mode":
+                payload = self._read_json()
+                unknown = set(payload) - {"mode", "start", "end"}
+                if unknown:
+                    unknown_name = sorted(unknown)[0]
+                    raise ValueError(f"unknown night-mode setting: {unknown_name}")
+                mode = self._required_string(payload, "mode")
+                start = self._required_string(payload, "start")
+                end = self._required_string(payload, "end")
+                self._send_json(
+                    self.server.set_night_mode(mode=mode, start=start, end=end)
+                )
             elif path == "/api/detection":
                 payload = self._read_json()
                 ai = self._optional_bool(payload, "ai_enabled")
@@ -1054,6 +1200,13 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         value = payload.get(key)
         if not isinstance(value, bool):
             raise ValueError(f"{key} must be true or false")
+        return value
+
+    @staticmethod
+    def _required_string(payload: dict[str, object], key: str) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be a string")
         return value
 
     @staticmethod
@@ -1420,7 +1573,8 @@ def main() -> int:
         )
         LOG.info(
             "Restored device settings: camera=%s ai=%s categories=%s motion=%s "
-            "sensitivity=%d capture=%dx%d@%d/Q%d live=%dx%d@%d/Q%d",
+            "sensitivity=%d capture=%dx%d@%d/Q%d live=%dx%d@%d/Q%d "
+            "night=%s (%s-%s)",
             saved_settings.camera_enabled,
             saved_settings.ai_enabled,
             ",".join(saved_settings.ai_categories),
@@ -1434,6 +1588,9 @@ def main() -> int:
             saved_settings.live_height,
             saved_settings.live_fps,
             saved_settings.live_quality,
+            saved_settings.night_mode,
+            saved_settings.night_start,
+            saved_settings.night_end,
         )
     except ValueError as exc:
         LOG.error("Detection or saved settings configuration is invalid: %s", exc)
@@ -1450,7 +1607,12 @@ def main() -> int:
         live_quality=saved_settings.live_quality,
     )
     stream = CameraStream(
-        runtime_config, detection, initial_enabled=saved_settings.camera_enabled
+        runtime_config,
+        detection,
+        initial_enabled=saved_settings.camera_enabled,
+        night_mode=saved_settings.night_mode,
+        night_start=saved_settings.night_start,
+        night_end=saved_settings.night_end,
     )
     server = CameraHTTPServer(
         (config.host, config.port),

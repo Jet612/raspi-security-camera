@@ -141,6 +141,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .settings-grid-single { grid-template-columns: 1fr; }
 .camera-control-panel { grid-column: 1 / -1; }
+.night-mode-panel { grid-column: 1 / -1; }
 .settings-panel { align-self: start; }
 .setting-row, .quality-row { min-height: 76px; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
 .setting-row:last-child, .quality-row:last-child { border-bottom: 0; }
@@ -154,7 +155,10 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 .quality-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .quality-field { min-width: 0; display: grid; gap: 7px; color: #bac1c8; font-size: 12px; font-weight: 700; }
 .quality-field select { width: 100%; height: 40px; padding: 0 34px 0 11px; border: 1px solid var(--line-strong); border-radius: 8px; outline: 0; background: #0b0e12; color: var(--text); cursor: pointer; }
-.quality-field select:focus { border-color: rgba(103, 232, 181, .55); box-shadow: 0 0 0 3px rgba(103, 232, 181, .08); }
+.quality-field input[type="time"] { width: 100%; height: 40px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 8px; outline: 0; background: #0b0e12; color: var(--text); color-scheme: dark; }
+.quality-field select:focus, .quality-field input[type="time"]:focus { border-color: rgba(103, 232, 181, .55); box-shadow: 0 0 0 3px rgba(103, 232, 181, .08); }
+.quality-field select:disabled, .quality-field input:disabled { opacity: .48; cursor: not-allowed; }
+.night-mode-fields { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 13px; }
 .quality-slider { grid-column: 1 / -1; margin-top: 3px; }
 .quality-slider > span { display: flex; justify-content: space-between; gap: 12px; }
 .quality-slider output { color: var(--green); font: 750 11px ui-monospace, monospace; }
@@ -264,6 +268,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 @media (max-width: 1180px) {
   .settings-grid { grid-template-columns: 1fr; }
   .camera-control-panel { grid-column: auto; }
+  .night-mode-panel { grid-column: auto; }
 }
 
 @media (max-width: 1080px) {
@@ -318,6 +323,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
   .confirm-dialog { padding: 24px; }
   .recommended-badge { display: none; }
   .quality-fields { grid-template-columns: 1fr; }
+  .night-mode-fields { grid-template-columns: 1fr; }
   .quality-slider { grid-column: auto; }
   .quality-footer { align-items: stretch; flex-direction: column; }
   .quality-current { white-space: normal; }

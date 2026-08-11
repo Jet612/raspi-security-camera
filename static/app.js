@@ -555,11 +555,20 @@ const liveQuality = $("#live-quality");
 const liveQualityOutput = $("#live-quality-output");
 const liveQualityWarning = $("#live-quality-warning");
 const saveLiveQuality = $("#save-live-quality");
+const nightModeForm = $("#night-mode-form");
+const nightMode = $("#night-mode");
+const nightStart = $("#night-start");
+const nightEnd = $("#night-end");
+const nightModeState = $("#night-mode-state");
+const nightModeDetail = $("#night-mode-detail");
+const nightModeCurrent = $("#night-mode-current");
+const saveNightMode = $("#save-night-mode");
 const settingsAiOverlay = $("#settings-ai-overlay");
 const settingsMotionOverlay = $("#settings-motion-overlay");
 
 let captureQualityDirty = false;
 let liveQualityDirty = false;
+let nightModeDirty = false;
 
 function ensureSelectValue(select, value, label) {
   if (![...select.options].some((option) => option.value === value)) {
@@ -676,6 +685,35 @@ function renderSettings(status) {
   motionControlDetail.textContent = detection.motion?.enabled
     ? "Monitoring frame changes"
     : "Motion detection is off";
+  const night = status.night || { mode: "off", effective: false, start: "20:00", end: "06:00", timezone: "local time", supported: true };
+  if (!nightModeDirty && !pendingControls.has("night-mode")) {
+    nightMode.value = night.mode;
+    nightStart.value = night.start;
+    nightEnd.value = night.end;
+  }
+  const scheduled = nightMode.value === "scheduled";
+  const nightPending = pendingControls.has("night-mode");
+  nightStart.disabled = !scheduled || nightPending || !night.supported;
+  nightEnd.disabled = !scheduled || nightPending || !night.supported;
+  nightMode.disabled = nightPending || !night.supported;
+  saveNightMode.disabled = !nightModeDirty || nightPending || !night.supported;
+  nightModeState.textContent = night.effective ? "Active" : "Off";
+  nightModeCurrent.textContent = night.mode === "scheduled"
+    ? `Current: ${night.start}–${night.end} · ${night.timezone}`
+    : `Current: ${titleCase(night.mode)}`;
+  if (!night.supported) {
+    nightModeDetail.className = "quality-advisory warning";
+    nightModeDetail.textContent = "Night mode cannot modify a custom CAMERA_COMMAND capture pipeline.";
+  } else if (nightMode.value === "scheduled") {
+    nightModeDetail.className = "quality-advisory";
+    nightModeDetail.textContent = `The schedule follows the Raspberry Pi clock (${night.timezone}) and may span midnight.`;
+  } else if (nightMode.value === "on") {
+    nightModeDetail.className = "quality-advisory";
+    nightModeDetail.textContent = "Night mode will stay on until you switch it off or choose a schedule.";
+  } else {
+    nightModeDetail.className = "quality-advisory";
+    nightModeDetail.textContent = "Night mode increases sensor gain and denoising for dark scenes.";
+  }
   const captureSettings = qualitySettings(status, "capture");
   const liveSettings = qualitySettings(status, "live");
   if (!captureQualityDirty && !pendingControls.has("capture-quality")) setQualityControls("capture", captureSettings);
@@ -737,6 +775,29 @@ async function setToggle(control, path, payload, key, label) {
   }
 }
 
+async function applyNightMode() {
+  if (nightMode.value === "scheduled" && nightStart.value === nightEnd.value) {
+    showToast("Choose different night-mode start and end times", true);
+    return;
+  }
+  pendingControls.add("night-mode");
+  for (const control of [nightMode, nightStart, nightEnd, saveNightMode]) control.disabled = true;
+  try {
+    const status = await api("/api/night-mode", {
+      method: "POST",
+      body: JSON.stringify({ mode: nightMode.value, start: nightStart.value, end: nightEnd.value }),
+    });
+    nightModeDirty = false;
+    latestStatus = status;
+    showToast(status.night?.effective ? "Night mode is active" : "Night mode settings saved");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    pendingControls.delete("night-mode");
+    if (latestStatus) renderSettings(latestStatus);
+  }
+}
+
 function initializeSettingsPage() {
   settingsAiOverlay.checked = storedBoolean("sentinel.overlay.ai");
   settingsMotionOverlay.checked = storedBoolean("sentinel.overlay.motion");
@@ -764,6 +825,16 @@ function initializeSettingsPage() {
       updateQualityAdvice("live");
     });
   }
+  for (const control of [nightMode, nightStart, nightEnd]) {
+    control.addEventListener("input", () => {
+      nightModeDirty = true;
+      if (latestStatus) renderSettings(latestStatus);
+    });
+  }
+  nightModeForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void applyNightMode();
+  });
   captureQualityForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void applyQualitySettings("capture");

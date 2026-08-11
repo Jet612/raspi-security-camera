@@ -203,6 +203,7 @@ class HTTPTests(unittest.TestCase):
                     if path == "/settings":
                         self.assertIn(b"capture-quality-form", body)
                         self.assertIn(b"live-quality-form", body)
+                        self.assertIn(b"night-mode-form", body)
                         self.assertIn(b"Recommended: 1080p", body)
                     self.assertEqual(response.headers["X-Frame-Options"], "DENY")
                     self.assertEqual(response.headers["Cache-Control"], "no-store")
@@ -336,6 +337,23 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as raised:
             self.request_json(
                 "/api/detection", {"ai_categories": []}, "POST"
+            )
+        self.assertEqual(raised.exception.code, 400)
+
+    def test_night_mode_controls_persist_and_validate_schedule(self):
+        _, status = self.request_json(
+            "/api/night-mode",
+            {"mode": "scheduled", "start": "20:00", "end": "06:00"},
+            "POST",
+        )
+        self.assertEqual(status["night"]["mode"], "scheduled")
+        self.assertEqual(self.settings_store.current.night_start, "20:00")
+
+        with self.assertRaises(HTTPError) as raised:
+            self.request_json(
+                "/api/night-mode",
+                {"mode": "scheduled", "start": "06:00", "end": "06:00"},
+                "POST",
             )
         self.assertEqual(raised.exception.code, 400)
 

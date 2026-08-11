@@ -35,6 +35,9 @@ class SettingsStoreTests(unittest.TestCase):
                 live_height=720,
                 live_fps=15,
                 live_quality=65,
+                night_mode="scheduled",
+                night_start="21:30",
+                night_end="05:45",
             )
 
             restored = SettingsStore(path, DEFAULTS).current
@@ -49,6 +52,9 @@ class SettingsStoreTests(unittest.TestCase):
             self.assertEqual(restored.live_width, 1280)
             self.assertEqual(restored.live_fps, 15)
             self.assertEqual(restored.live_quality, 65)
+            self.assertEqual(restored.night_mode, "scheduled")
+            self.assertEqual(restored.night_start, "21:30")
+            self.assertEqual(restored.night_end, "05:45")
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
     def test_rejects_invalid_or_overexposed_settings_files(self):
@@ -136,6 +142,32 @@ class SettingsStoreTests(unittest.TestCase):
                 store.update(capture_fps=61)
             with self.assertRaisesRegex(ValueError, "live_quality"):
                 store.update(live_quality=10)
+
+    def test_version_three_settings_inherit_night_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            payload = DEFAULTS.to_json()
+            payload["version"] = 3
+            for name in ("night_mode", "night_start", "night_end"):
+                payload.pop(name)
+            path.write_text(json.dumps(payload))
+            path.chmod(0o600)
+
+            restored = SettingsStore(path, DEFAULTS).current
+
+            self.assertEqual(restored.night_mode, "off")
+            self.assertEqual(restored.night_start, "20:00")
+            self.assertEqual(restored.night_end, "06:00")
+
+    def test_rejects_invalid_night_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json", DEFAULTS)
+            with self.assertRaisesRegex(ValueError, "HH:MM"):
+                store.update(night_start="8:00")
+            with self.assertRaisesRegex(ValueError, "must be different"):
+                store.update(
+                    night_mode="scheduled", night_start="06:00", night_end="06:00"
+                )
 
 
 if __name__ == "__main__":
